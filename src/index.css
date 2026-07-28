@@ -1,1 +1,23 @@
 @import "tailwindcss";
+
+:root {
+  --amarillo: #FFC800;
+  --amarillo-hover: #E6B400;
+  --negro: #0B0B0B;
+  --gris-oscuro: #1A1A1A;
+  --gris-medio: #2C2C2C;
+  --gris-claro: #F5F5F5;
+  --texto-claro: #FFFFFF;
+  --texto-oscuro: #0B0B0B;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: 'Inter', sans-serif;
+  background: var(--gris-claro);
+}
