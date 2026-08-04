@@ -15,6 +15,8 @@ const menuAdmin = [
   { label: "Inicio", icon: "ti-home" },
   { label: "Solicitudes", icon: "ti-bell" },
   { label: "Entrenadores", icon: "ti-users" },
+  { label: "Clientes", icon: "ti-user-plus" },
+  { label: "Reportes", icon: "ti-chart-bar" },
 ];
 
 export default function Layout({ usuario, rol, datosUsuario }) {
