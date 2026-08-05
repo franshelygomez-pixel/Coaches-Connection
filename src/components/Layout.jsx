@@ -3,6 +3,9 @@ import { auth } from "../firebase";
 import { signOut } from "firebase/auth";
 import Calendario from "./Calendario";
 import DashboardAdmin from "../pages/DashboardAdmin";
+import InicioEntrenador from "./InicioEntrenador";
+import ClientesEntrenador from "./ClientesEntrenador";
+import RutinasEntrenador from "./RutinasEntrenador";
 
 const menuCoach = [
   { label: "Inicio", icon: "ti-home" },
@@ -25,6 +28,16 @@ export default function Layout({ usuario, rol, datosUsuario }) {
 
   const menu = rol === "admin" ? menuAdmin : menuCoach;
 
+  const renderVistaCoach = () => {
+    switch (activo) {
+      case "Inicio": return <InicioEntrenador usuario={usuario} datosUsuario={datosUsuario} />;
+      case "Clientes": return <ClientesEntrenador usuario={usuario} />;
+      case "Calendario": return <Calendario />;
+      case "Rutinas": return <RutinasEntrenador usuario={usuario} />;
+      default: return <InicioEntrenador usuario={usuario} datosUsuario={datosUsuario} />;
+    }
+  };
+
   return (
     <div style={{ display: "flex", minHeight: "100vh", background: "#F5F5F5" }}>
 
@@ -34,14 +47,13 @@ export default function Layout({ usuario, rol, datosUsuario }) {
         display: "flex", flexDirection: "column", transition: "width 0.3s",
         flexShrink: 0
       }}>
-        {/* Logo */}
         <div style={{
           padding: "24px 16px", borderBottom: "0.5px solid #2C2C2C",
           display: "flex", alignItems: "center", justifyContent: "space-between"
         }}>
           {!collapsed && (
             <span style={{ fontSize: "16px", fontWeight: "900", color: "#FFFFFF", letterSpacing: "-0.5px" }}>
-              coaches<span style={{ color: "#FFC800" }}>conn</span>
+              Smart<span style={{ color: "#FFC800" }}>fit</span>
             </span>
           )}
           <button onClick={() => setCollapsed(!collapsed)} style={{
@@ -52,7 +64,6 @@ export default function Layout({ usuario, rol, datosUsuario }) {
           </button>
         </div>
 
-        {/* Menu */}
         <nav style={{ flex: 1, padding: "16px 8px" }}>
           {menu.map((item) => (
             <button key={item.label} onClick={() => setActivo(item.label)} style={{
@@ -70,7 +81,6 @@ export default function Layout({ usuario, rol, datosUsuario }) {
           ))}
         </nav>
 
-        {/* Usuario */}
         <div style={{ padding: "16px 8px", borderTop: "0.5px solid #2C2C2C" }}>
           {!collapsed && (
             <div style={{ padding: "8px", marginBottom: "8px" }}>
@@ -96,8 +106,6 @@ export default function Layout({ usuario, rol, datosUsuario }) {
 
       {/* Contenido */}
       <div style={{ flex: 1, display: "flex", flexDirection: "column" }}>
-
-        {/* Topbar */}
         <div style={{
           background: "#FFFFFF", borderBottom: "0.5px solid #E5E5E5",
           padding: "0 32px", height: "64px", display: "flex",
@@ -115,16 +123,11 @@ export default function Layout({ usuario, rol, datosUsuario }) {
           </div>
         </div>
 
-        {/* Área de contenido */}
-        <div style={{ flex: 1, padding: "32px" }}>
+        <div style={{ flex: 1, padding: "32px", overflowY: "auto" }}>
           {rol === "admin" ? (
             <DashboardAdmin seccion={activo} setSeccion={setActivo} />
-          ) : activo === "Calendario" ? (
-            <Calendario />
           ) : (
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%" }}>
-              <p style={{ color: "#888", fontSize: "16px" }}>Selecciona una sección del menú</p>
-            </div>
+            renderVistaCoach()
           )}
         </div>
       </div>

@@ -95,7 +95,7 @@ export default function Registro({ onVolver }) {
 
         <div style={{ marginBottom: "48px" }}>
           <span style={{ fontSize: "28px", fontWeight: "900", color: "#FFFFFF", letterSpacing: "-1px" }}>
-            coaches<span style={{ color: "#FFC800" }}>connection</span>
+            Smart<span style={{ color: "#FFC800" }}>fit</span>
           </span>
         </div>
 
@@ -191,10 +191,10 @@ export default function Registro({ onVolver }) {
             borderRadius: "50%", margin: "0 auto 32px", display: "flex",
             alignItems: "center", justifyContent: "center"
           }}>
-            <span style={{ fontSize: "40px", fontWeight: "900", color: "#FFC800" }}>CC</span>
+            <span style={{ fontSize: "40px", fontWeight: "900", color: "#FFC800" }}>SF</span>
           </div>
           <h2 style={{ fontSize: "32px", fontWeight: "900", color: "#0B0B0B", marginBottom: "16px", lineHeight: 1.1 }}>
-            ENTRENA.<br />CONECTA.<br />CRECE.
+            EL GIMNASIO<br />INTELIGENTE.
           </h2>
           <p style={{ color: "#1A1A1A", fontSize: "15px", lineHeight: 1.6 }}>
             Únete a la plataforma que conecta entrenadores con su gimnasio.

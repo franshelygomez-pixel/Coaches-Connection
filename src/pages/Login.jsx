@@ -128,7 +128,7 @@ export default function Login() {
             <span style={{ fontSize: "40px", fontWeight: "900", color: "#FFC800" }}>SF</span>
           </div>
           <h2 style={{ fontSize: "32px", fontWeight: "900", color: "#0B0B0B", marginBottom: "16px", lineHeight: 1.1 }}>
-            TU EQUIPO.<br />TU RENDIMIENTO.
+            EL GIMNASIO<br />INTELIGENTE.
           </h2>
           <p style={{ color: "#1A1A1A", fontSize: "15px", lineHeight: 1.6 }}>
             Gestiona entrenadores, clientes y rutinas desde un solo lugar.

@@ -135,7 +135,7 @@ export default function DashboardAdmin({ seccion, setSeccion }) {
           <p style={{ fontSize: "12px", color: "#888", margin: "2px 0 0" }}>{coach.email}</p>
         </div>
       </div>
-      <span style={{ fontSize: "12px", color: "#888" }}>Ver →</span>
+      <span style={{ fontSize: "12px", color: "#888" }}>Ver </span>
     </div>
   );
 
@@ -146,7 +146,7 @@ export default function DashboardAdmin({ seccion, setSeccion }) {
         <button onClick={() => setCoachSeleccionado(null)} style={{
           background: "none", border: "none", cursor: "pointer",
           color: "#888", fontSize: "13px", marginBottom: "24px"
-        }}>← Volver</button>
+        }}>Volver</button>
 
         <div style={{ display: "flex", gap: "24px", flexWrap: "wrap" }}>
           {/* Info del coach */}
@@ -339,7 +339,7 @@ export default function DashboardAdmin({ seccion, setSeccion }) {
               <button onClick={() => setCoachSeleccionado(null)} style={{
                 background: "none", border: "none", cursor: "pointer",
                 color: "#888", fontSize: "13px", marginBottom: "24px"
-              }}>← Volver</button>
+              }}>Volver</button>
               <div style={estiloCard}>
                 <div style={{ display: "flex", alignItems: "center", gap: "16px", marginBottom: "20px" }}>
                   <div style={{
@@ -429,7 +429,7 @@ export default function DashboardAdmin({ seccion, setSeccion }) {
           setClienteSeleccionado(null);
           setFormCliente({ nombre: "", apellido: "", email: "", telefono: "", coachId: "" });
         }} style={estiloBoton("#FFC800", "#0B0B0B")}>
-          + Nuevo cliente
+          Nuevo cliente
         </button>
       </div>
 
