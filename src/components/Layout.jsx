@@ -118,7 +118,7 @@ export default function Layout({ usuario, rol, datosUsuario }) {
         {/* Área de contenido */}
         <div style={{ flex: 1, padding: "32px" }}>
           {rol === "admin" ? (
-            <DashboardAdmin seccion={activo} />
+            <DashboardAdmin seccion={activo} setSeccion={setActivo} />
           ) : activo === "Calendario" ? (
             <Calendario />
           ) : (

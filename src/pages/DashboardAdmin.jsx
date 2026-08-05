@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 import { db } from "../firebase";
 import { collection, query, where, getDocs, doc, updateDoc, addDoc, deleteDoc } from "firebase/firestore";
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip } from "recharts";
 
-export default function DashboardAdmin({ seccion }) {
+export default function DashboardAdmin({ seccion, setSeccion }) {
   const [pendientes, setPendientes] = useState([]);
   const [activos, setActivos] = useState([]);
   const [inactivos, setInactivos] = useState([]);
@@ -284,34 +285,42 @@ export default function DashboardAdmin({ seccion }) {
 
   // ===== INICIO =====
   if (seccion === "Inicio") return (
-    <div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: "16px", marginBottom: "32px" }}>
-        {[
-          { label: "Solicitudes pendientes", valor: pendientes.length, color: "#FFC800" },
-          { label: "Entrenadores activos", valor: activos.length, color: "#1D9E75" },
-          { label: "Entrenadores inactivos", valor: inactivos.length, color: "#888" },
-          { label: "Clientes totales", valor: clientes.filter(c => c.estado === "activo").length, color: "#378ADD" },
-        ].map(card => (
-          <div key={card.label} style={estiloCard}>
-            <p style={{ fontSize: "12px", color: "#888", marginBottom: "8px" }}>{card.label}</p>
-            <p style={{ fontSize: "36px", fontWeight: "900", color: card.color, margin: 0 }}>{card.valor}</p>
-          </div>
+  <div>
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: "16px", marginBottom: "32px" }}>
+      {[
+        { label: "Solicitudes pendientes", valor: pendientes.length, color: "#FFC800", ir: "Solicitudes" },
+        { label: "Entrenadores activos", valor: activos.length, color: "#1D9E75", ir: "Entrenadores" },
+        { label: "Entrenadores inactivos", valor: inactivos.length, color: "#888", ir: "Entrenadores" },
+        { label: "Clientes totales", valor: clientes.filter(c => c.estado === "activo").length, color: "#378ADD", ir: "Clientes" },
+      ].map(card => (
+        <div
+          key={card.label}
+          onClick={() => setSeccion(card.ir)}
+          style={{
+            background: "#FFFFFF", border: "0.5px solid #E5E5E5",
+            borderRadius: "12px", padding: "20px 24px",
+            cursor: "pointer", transition: "border-color 0.15s"
+          }}
+          onMouseEnter={e => e.currentTarget.style.borderColor = card.color}
+          onMouseLeave={e => e.currentTarget.style.borderColor = "#E5E5E5"}
+        >
+          <p style={{ fontSize: "12px", color: "#888", marginBottom: "8px" }}>{card.label}</p>
+          <p style={{ fontSize: "36px", fontWeight: "900", color: card.color, margin: "0 0 8px" }}>{card.valor}</p>
+        </div>
+      ))}
+    </div>
+    {pendientes.length > 0 && (
+      <div>
+        <h3 style={{ fontSize: "16px", fontWeight: "900", color: "#0B0B0B", marginBottom: "16px" }}>
+          Solicitudes recientes
+        </h3>
+        {pendientes.slice(0, 3).map(c => (
+          <CardCoach key={c.id} coach={c} onClick={() => setCoachSeleccionado(c)} />
         ))}
       </div>
-      {pendientes.length > 0 && (
-        <div>
-          <h3 style={{ fontSize: "16px", fontWeight: "900", color: "#0B0B0B", marginBottom: "16px" }}>
-            Solicitudes recientes
-          </h3>
-          {pendientes.slice(0, 3).map(c => (
-            <CardCoach key={c.id} coach={c} onClick={() => {
-              setCoachSeleccionado(c);
-            }} />
-          ))}
-        </div>
-      )}
-    </div>
-  );
+    )}
+  </div>
+);
 
   // ===== SOLICITUDES =====
   if (seccion === "Solicitudes") return (
@@ -552,46 +561,104 @@ export default function DashboardAdmin({ seccion }) {
   );
 
   // ===== REPORTES =====
-  if (seccion === "Reportes") return (
+  // ===== REPORTES =====
+if (seccion === "Reportes") {
+  const datosGrafica = activos.map(coach => ({
+    nombre: `${coach.nombre} ${coach.apellido}`.split(" ").slice(0, 2).join(" "),
+    clientes: clientes.filter(c => c.coachId === coach.id && c.estado === "activo").length,
+  }));
+
+  const totalClientes = clientes.filter(c => c.estado === "activo").length;
+  const totalInactivos = clientes.filter(c => c.estado === "inactivo").length;
+  const sinCoach = clientes.filter(c => c.estado === "activo" && !c.coachId).length;
+
+  return (
     <div>
       <h3 style={{ fontSize: "20px", fontWeight: "900", color: "#0B0B0B", marginBottom: "20px" }}>Reportes</h3>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: "16px" }}>
+
+      {/* Cards resumen */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: "16px", marginBottom: "32px" }}>
+        {[
+          { label: "Clientes activos", valor: totalClientes, color: "#1D9E75" },
+          { label: "Clientes inactivos", valor: totalInactivos, color: "#888" },
+          { label: "Sin entrenador asignado", valor: sinCoach, color: "#FFC800" },
+          { label: "Entrenadores activos", valor: activos.length, color: "#378ADD" },
+        ].map(card => (
+          <div key={card.label} style={{ background: "#FFFFFF", border: "0.5px solid #E5E5E5", borderRadius: "12px", padding: "20px 24px" }}>
+            <p style={{ fontSize: "12px", color: "#888", marginBottom: "8px" }}>{card.label}</p>
+            <p style={{ fontSize: "32px", fontWeight: "900", color: card.color, margin: 0 }}>{card.valor}</p>
+          </div>
+        ))}
+      </div>
+
+      {/* Gráfica de clientes por coach */}
+      <div style={{ background: "#FFFFFF", border: "0.5px solid #E5E5E5", borderRadius: "12px", padding: "24px", marginBottom: "24px" }}>
+        <h4 style={{ fontSize: "16px", fontWeight: "900", color: "#0B0B0B", marginBottom: "20px" }}>
+          Clientes por entrenador
+        </h4>
+        {activos.length === 0 ? (
+          <p style={{ color: "#888", textAlign: "center", padding: "40px 0" }}>No hay entrenadores activos</p>
+        ) : (
+          <BarChart width={600} height={280} data={datosGrafica} margin={{ top: 0, right: 20, left: 0, bottom: 0 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#F0F0F0" />
+            <XAxis dataKey="nombre" tick={{ fontSize: 12, fill: "#888" }} />
+            <YAxis allowDecimals={false} tick={{ fontSize: 12, fill: "#888" }} />
+            <Tooltip
+              contentStyle={{ borderRadius: "8px", border: "0.5px solid #E5E5E5", fontSize: "13px" }}
+              formatter={(value) => [value, "Clientes"]}
+            />
+            <Bar dataKey="clientes" fill="#FFC800" radius={[6, 6, 0, 0]} />
+          </BarChart>
+        )}
+      </div>
+
+      {/* Tabla clientes por coach */}
+      <div style={{ background: "#FFFFFF", border: "0.5px solid #E5E5E5", borderRadius: "12px", padding: "24px" }}>
+        <h4 style={{ fontSize: "16px", fontWeight: "900", color: "#0B0B0B", marginBottom: "20px" }}>
+          Detalle por entrenador
+        </h4>
         {activos.map(coach => {
           const clientesCoach = clientes.filter(c => c.coachId === coach.id && c.estado === "activo");
           return (
-            <div key={coach.id} style={estiloCard}>
-              <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "16px" }}>
-                <div style={{
-                  width: "36px", height: "36px", borderRadius: "50%", background: "#0B0B0B",
-                  display: "flex", alignItems: "center", justifyContent: "center",
-                  color: "#FFC800", fontWeight: "900", fontSize: "13px"
-                }}>
-                  {coach.nombre?.[0]?.toUpperCase()}
-                </div>
-                <div>
+            <div key={coach.id} style={{ marginBottom: "16px", paddingBottom: "16px", borderBottom: "0.5px solid #F0F0F0" }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "8px" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                  <div style={{
+                    width: "32px", height: "32px", borderRadius: "50%", background: "#0B0B0B",
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                    color: "#FFC800", fontWeight: "900", fontSize: "12px"
+                  }}>
+                    {coach.nombre?.[0]?.toUpperCase()}
+                  </div>
                   <p style={{ fontWeight: "700", fontSize: "14px", color: "#0B0B0B", margin: 0 }}>
                     {coach.nombre} {coach.apellido}
                   </p>
-                  <p style={{ fontSize: "12px", color: "#888", margin: "2px 0 0" }}>Entrenador activo</p>
                 </div>
+                <span style={{
+                  fontSize: "13px", fontWeight: "900", color: "#FFC800",
+                  background: "#FFF8E1", padding: "4px 12px", borderRadius: "20px"
+                }}>
+                  {clientesCoach.length} clientes
+                </span>
               </div>
-              <div style={{ borderTop: "0.5px solid #F0F0F0", paddingTop: "12px" }}>
-                <p style={{ fontSize: "12px", color: "#888", margin: "0 0 4px" }}>Clientes asignados</p>
-                <p style={{ fontSize: "28px", fontWeight: "900", color: "#FFC800", margin: 0 }}>
-                  {clientesCoach.length}
-                </p>
+              {/* Barra de progreso */}
+              <div style={{ height: "6px", background: "#F5F5F5", borderRadius: "99px", overflow: "hidden" }}>
+                <div style={{
+                  height: "100%", borderRadius: "99px", background: "#FFC800",
+                  width: totalClientes > 0 ? `${(clientesCoach.length / totalClientes) * 100}%` : "0%",
+                  transition: "width 0.5s"
+                }} />
               </div>
             </div>
           );
         })}
         {activos.length === 0 && (
-          <div style={{ ...estiloCard, textAlign: "center", padding: "60px" }}>
-            <p style={{ color: "#888" }}>No hay entrenadores activos para reportar</p>
-          </div>
+          <p style={{ color: "#888", textAlign: "center", padding: "40px 0" }}>No hay entrenadores activos</p>
         )}
       </div>
     </div>
   );
+}
 
   return null;
 }
