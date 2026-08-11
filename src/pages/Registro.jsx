@@ -1,9 +1,16 @@
 import { useState, useEffect } from "react";
 import { auth, db, provider } from "../firebase";
 import { createUserWithEmailAndPassword, signInWithRedirect, updateProfile, getRedirectResult } from "firebase/auth";
-import { doc, setDoc } from "firebase/firestore";
+import { doc, setDoc, collection, query, where, getDocs } from "firebase/firestore";
 
 const CODIGO_ADMIN = "SF-ADMIN-2026";
+
+// Estilo compartido para los inputs (faltaba por completo)
+const inputStyle = {
+  width: "100%", border: "0.5px solid #2C2C2C", borderRadius: "8px",
+  padding: "12px", fontSize: "14px", marginBottom: "12px",
+  outline: "none", display: "block", background: "#0B0B0B", color: "#FFFFFF"
+};
 
 function generarCodigo() {
   const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
@@ -45,47 +52,87 @@ export default function Registro({ onVolver }) {
     }).catch(() => {});
   }, []);
 
-  const handleRegistro = async () => {
-    setError("");
-    if (!form.nombre || !form.correo || !form.password) {
-      setError("Por favor completa todos los campos obligatorios");
-      return;
-    }
-    if (form.password.length < 6) {
-      setError("La contraseña debe tener al menos 6 caracteres");
-      return;
-    }
-    if (esAdmin && form.codigoAdmin !== CODIGO_ADMIN) {
-      setError("El código de administrador no es válido");
-      return;
-    }
-    setCargando(true);
-    try {
-      const rol = esAdmin ? "admin" : "coach";
-      const cred = await createUserWithEmailAndPassword(auth, form.correo, form.password);
-      await updateProfile(cred.user, { displayName: `${form.nombre} ${form.apellido}` });
-      await registrar(form.nombre, form.apellido, form.correo, cred.user.uid, rol);
-    } catch (e) {
-      if (e.code === "auth/email-already-in-use") setError("Este correo ya está registrado");
-      else if (e.code === "auth/invalid-email") setError("El correo no es válido");
-      else setError("Error al registrarse. Intenta de nuevo.");
-      setCargando(false);
-    }
-  };
-
+  // Función que faltaba para el botón "Registrarse con Google"
   const handleGoogle = async () => {
+    setError("");
     try {
       await signInWithRedirect(auth, provider);
+      // El registro (registrar(...)) se completa en el useEffect de arriba
+      // vía getRedirectResult, cuando el usuario vuelve de la pantalla de Google.
     } catch (e) {
-      setError("Error al continuar con Google");
+      setError("No se pudo iniciar el registro con Google. Intenta de nuevo.");
     }
   };
 
-  const inputStyle = {
-    width: "100%", background: "#2C2C2C", border: "0.5px solid #3C3C3C",
-    borderRadius: "8px", padding: "14px", color: "#FFFFFF", fontSize: "14px",
-    marginBottom: "10px", outline: "none", display: "block"
-  };
+ const handleRegistro = async () => {
+  setError("");
+
+  // Validar campos obligatorios
+  if (!form.nombre || !form.correo || !form.password) {
+    setError("Por favor completa todos los campos obligatorios");
+    return;
+  }
+
+  // Validar que nombre solo tenga letras
+  const soloLetras = /^[a-zA-ZáéíóúÁÉÍÓÚñÑ\s]+$/;
+  if (!soloLetras.test(form.nombre)) {
+    setError("El nombre solo puede contener letras");
+    return;
+  }
+  if (form.apellido && !soloLetras.test(form.apellido)) {
+    setError("El apellido solo puede contener letras");
+    return;
+  }
+
+  // Validar formato de correo
+  const formatoCorreo = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
+  if (!formatoCorreo.test(form.correo)) {
+    setError("El formato del correo no es válido");
+    return;
+  }
+
+  // Validar contraseña
+  if (form.password.length < 6) {
+    setError("La contraseña debe tener al menos 6 caracteres");
+    return;
+  }
+
+  // Validar código de admin si aplica
+  if (esAdmin && form.codigoAdmin !== CODIGO_ADMIN) {
+    setError("El código de administrador no es válido");
+    return;
+  }
+
+  setCargando(true);
+
+  try {
+    // Verificar si el correo ya existe en Firestore
+    const q = query(collection(db, "usuarios"), where("email", "==", form.correo));
+    const snap = await getDocs(q);
+    if (!snap.empty) {
+      setError("Este correo ya está registrado en el sistema");
+      setCargando(false);
+      return;
+    }
+
+    const rol = esAdmin ? "admin" : "coach";
+    const cred = await createUserWithEmailAndPassword(auth, form.correo, form.password);
+    await updateProfile(cred.user, { displayName: `${form.nombre} ${form.apellido}` });
+    await registrar(form.nombre, form.apellido, form.correo, cred.user.uid, rol);
+
+  } catch (e) {
+    if (e.code === "auth/email-already-in-use") {
+      setError("Este correo ya está registrado. Intenta iniciar sesión.");
+    } else if (e.code === "auth/invalid-email") {
+      setError("El formato del correo no es válido");
+    } else if (e.code === "auth/weak-password") {
+      setError("La contraseña debe tener al menos 6 caracteres");
+    } else {
+      setError("Error al registrarse. Intenta de nuevo.");
+    }
+    setCargando(false);
+  }
+};
 
   return (
     <div style={{ minHeight: "100vh", background: "#0B0B0B", display: "flex" }}>
@@ -150,8 +197,18 @@ export default function Registro({ onVolver }) {
           </div>
 
           <div style={{ display: "flex", gap: "10px" }}>
-            <input name="nombre" placeholder="Nombre *" value={form.nombre} onChange={handleChange} style={inputStyle} />
-            <input name="apellido" placeholder="Apellido" value={form.apellido} onChange={handleChange} style={inputStyle} />
+            <input name="nombre" placeholder="Nombre *" value={form.nombre}
+              onChange={e => { const val = e.target.value.replace(/[^a-zA-ZáéíóúÁÉÍÓÚñÑ\s]/g, "");
+    setForm({ ...form, nombre: val });
+  }}
+  style={{ ...inputStyle }}
+/>
+            <input name="apellido" placeholder="Apellido" value={form.apellido}  
+            onChange={e => { const val = e.target.value.replace(/[^a-zA-ZáéíóúÁÉÍÓÚñÑ\s]/g, "");
+    setForm({ ...form, apellido: val });
+  }}
+  style={{ ...inputStyle }}
+/>
           </div>
           <input name="correo" type="email" placeholder="Correo electrónico *" value={form.correo} onChange={handleChange} style={inputStyle} />
           <input name="password" type="password" placeholder="Contraseña (mínimo 6 caracteres) *" value={form.password} onChange={handleChange} style={inputStyle} />
@@ -160,7 +217,16 @@ export default function Registro({ onVolver }) {
             <input name="codigoAdmin" placeholder="Código de administrador *" value={form.codigoAdmin} onChange={handleChange} style={{ ...inputStyle, borderColor: "#FFC800" }} />
           )}
 
-          {error && <p style={{ color: "#FF4444", fontSize: "13px", marginBottom: "12px" }}>{error}</p>}
+          {error && (
+  <div style={{
+    background: "#FFF0F0", border: "0.5px solid #FFCCCC",
+    borderRadius: "8px", padding: "12px 16px",
+    marginBottom: "16px", display: "flex", alignItems: "flex-start", gap: "10px"
+  }}>
+    <span style={{ color: "#CC0000", fontSize: "16px", flexShrink: 0 }}>!</span>
+    <p style={{ color: "#CC0000", fontSize: "13px", margin: 0, lineHeight: 1.5 }}>{error}</p>
+  </div>
+)}
 
           <button onClick={handleRegistro} disabled={cargando} style={{
             width: "100%", background: "#FFC800", color: "#0B0B0B", fontWeight: "900",
@@ -197,7 +263,7 @@ export default function Registro({ onVolver }) {
             EL GIMNASIO<br />INTELIGENTE.
           </h2>
           <p style={{ color: "#1A1A1A", fontSize: "15px", lineHeight: 1.6 }}>
-            Únete a la plataforma que conecta entrenadores con su gimnasio.
+            Únete a la plataforma que conecta entrenadores.
           </p>
         </div>
       </div>
