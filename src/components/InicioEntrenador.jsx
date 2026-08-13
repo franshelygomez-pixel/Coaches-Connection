@@ -1,257 +1,264 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { db } from "../firebase";
+import { collection, query, where, getDocs } from "firebase/firestore";
 
 export default function InicioEntrenador({ usuario, datosUsuario }) {
-  // Extraer el nombre real desde los props de sesión o Firestore
-  const nombreEntrenador =
-    datosUsuario?.nombre ||
-    usuario?.displayName ||
-    usuario?.email?.split("@")[0] ||
-    "Entrenador";
+  const [clientes, setClientes] = useState([]);
+  const [eventosFirestore, setEventosFirestore] = useState([]);
+  const [eventosGoogle, setEventosGoogle] = useState([]);
+  const [cargando, setCargando] = useState(true);
 
-  // Datos simulados (Mock Data) de la jornada
-  const [tareasHoy] = useState([
-    {
-      id: 1,
-      hora: "08:30 AM",
-      cliente: "Juan Pérez",
-      tipo: "Evaluación Física Inicial",
-      estado: "Pendiente",
-      tag: "P4.0",
-    },
-    {
-      id: 2,
-      hora: "10:00 AM",
-      cliente: "María Gómez",
-      tipo: "Renovación de Rutina (Mes 2)",
-      estado: "En Proceso",
-      tag: "P5.0",
-    },
-    {
-      id: 3,
-      hora: "03:00 PM",
-      cliente: "Pedro Martínez",
-      tipo: "Seguimiento de Métricas",
-      estado: "Pendiente",
-      tag: "P6.0",
-    },
-  ]);
+  const nombreEntrenador = datosUsuario?.nombre || usuario?.displayName?.split(" ")[0] || "Entrenador";
+  const coachId = usuario?.uid;
 
-  const [resumenClientes] = useState([
-    {
-      id: "CLI-101",
-      nombre: "Juan Pérez",
-      plan: "Hipertrofia - Torso Pierna",
-      estado: "Activo",
-    },
-    {
-      id: "CLI-102",
-      nombre: "María Gómez",
-      plan: "Pérdida de Grasa - Guiado",
-      estado: "Por Vencer",
-    },
-    {
-      id: "CLI-103",
-      nombre: "Pedro Martínez",
-      plan: "Resistencia Cardiovascular",
-      estado: "Activo",
-    },
-  ]);
+  const hoy = new Date();
+  const hora = hoy.getHours();
+  const saludo = hora < 12 ? "Buenos días" : hora < 18 ? "Buenas tardes" : "Buenas noches";
+
+  const token = localStorage.getItem("googleCalendarToken");
+
+  // Cargar clientes del coach
+  useEffect(() => {
+    const cargarClientes = async () => {
+      if (!coachId) {
+        setCargando(false);
+        return;
+      }
+      try {
+        const q = query(collection(db, "clientes"), where("coachId", "==", coachId));
+        const snap = await getDocs(q);
+        setClientes(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+      } catch (e) {
+        console.error("Error cargando clientes:", e);
+      } finally {
+        setCargando(false);
+      }
+    };
+    cargarClientes();
+  }, [coachId]);
+
+  // Cargar eventos internos (Firestore)
+  useEffect(() => {
+    const cargarEventosFirestore = async () => {
+      if (!coachId) return;
+      try {
+        const hoyStr = new Date().toISOString().split("T")[0];
+        const q = query(
+          collection(db, "eventos"),
+          where("coachId", "==", coachId),
+          where("fecha", "==", hoyStr)
+        );
+        const snap = await getDocs(q);
+        setEventosFirestore(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+      } catch (e) {
+        console.error("Error cargando eventos Firestore:", e);
+      }
+    };
+    cargarEventosFirestore();
+  }, [coachId]);
+
+  // Cargar eventos de Google Calendar
+  useEffect(() => {
+    const cargarEventosGoogle = async () => {
+      if (!token) return;
+      try {
+        const hoyStr = new Date().toISOString().split("T")[0];
+        const inicio = `${hoyStr}T00:00:00Z`;
+        const fin = `${hoyStr}T23:59:59Z`;
+        const res = await fetch(
+          `https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=${inicio}&timeMax=${fin}&singleEvents=true&orderBy=startTime`,
+          { headers: { Authorization: `Bearer ${token}` } }
+        );
+        const data = await res.json();
+        setEventosGoogle(data.items || []);
+      } catch (e) {
+        console.error("Error cargando eventos Google:", e);
+      }
+    };
+    cargarEventosGoogle();
+  }, [token]);
+
+  // Unificamos las dos fuentes de eventos en un solo array para pintar la UI
+  const eventos = [
+    ...eventosFirestore.map(e => ({
+      id: e.id,
+      titulo: e.titulo,
+      descripcion: e.descripcion,
+      inicio: e.inicio,
+    })),
+    ...eventosGoogle.map(e => ({
+      id: e.id,
+      titulo: e.summary,
+      descripcion: e.description,
+      inicio: e.start?.dateTime || e.start?.date,
+    })),
+  ];
+
+  const activos = clientes.filter(c => c.estado === "Activo" || c.estado === "activo");
+  const enEvaluacion = clientes.filter(c => c.estado === "En Evaluación");
+
+  const estiloCard = {
+    background: "#FFFFFF", border: "0.5px solid #E5E5E5",
+    borderRadius: "12px", padding: "20px 24px"
+  };
+
+  if (cargando) return (
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "200px" }}>
+      <p style={{ color: "#888" }}>Cargando...</p>
+    </div>
+  );
 
   return (
-    /* Fondo Cálido Suave (-margin para cubrir todo el contenedor si es necesario) */
-    <div className="space-y-8 font-sans text-stone-800 bg-[#FAF8F5] p-6 sm:p-8 rounded-xl border border-stone-200/60">
-      
-      {/* 1. Header de Bienvenida Amplio con Tono Marfil/Cálido */}
-      <div className="bg-[#F4EFEA] border border-stone-300/70 rounded-lg py-10 px-8 shadow-sm">
-        <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center gap-6">
-          <div className="space-y-2 max-w-3xl">
-            <div className="flex items-center gap-3">
-              <span className="bg-[#FFC800] text-black text-xs font-bold px-3 py-1 rounded-sm uppercase tracking-wide">
-                Smart Fit • La Vega
-              </span>
-              <span className="text-stone-600 text-xs font-medium uppercase tracking-wider">
-                | Entrenador Personal
-              </span>
-            </div>
-            
-            <h1 className="text-3xl lg:text-4xl font-bold text-stone-900 tracking-tight leading-snug">
-              Bienvenido, <span className="capitalize">{nombreEntrenador}</span>
-            </h1>
-            
-            <p className="text-stone-600 text-base leading-relaxed">
-              Consulta tu programa de trabajo diario, atiende las evaluaciones pendientes y gestiona el seguimiento de tus clientes asignados.
-            </p>
-          </div>
-
-          {/* Botones de Acción Rápida */}
-          <div className="flex flex-wrap gap-4 w-full lg:w-auto pt-2 lg:pt-0">
-            <button className="flex-1 lg:flex-none bg-[#FFC800] text-stone-900 font-semibold px-6 py-3.5 rounded-md text-base hover:bg-[#e6b400] transition shadow-sm border border-amber-400">
-              + Nueva Evaluación
-            </button>
-            <button className="flex-1 lg:flex-none bg-stone-900 text-stone-50 font-semibold px-6 py-3.5 rounded-md text-base hover:bg-stone-800 transition">
-              + Prescribir Rutina
-            </button>
-          </div>
-        </div>
+    <div>
+      {/* Saludo */}
+      <div style={{ marginBottom: "28px" }}>
+        <p style={{ fontSize: "13px", color: "#888", margin: "0 0 4px" }}>
+          {hoy.toLocaleDateString("es-DO", { weekday: "long", day: "numeric", month: "long", year: "numeric" })}
+        </p>
+        <h2 style={{ fontSize: "26px", fontWeight: "900", color: "#0B0B0B", margin: 0 }}>
+          {saludo}, <span style={{ color: "#FFC800" }}>{nombreEntrenador}</span>
+        </h2>
+        <p style={{ fontSize: "14px", color: "#888", marginTop: "6px" }}>
+          Aquí está el resumen de tu actividad de hoy.
+        </p>
       </div>
 
-      {/* 2. Tarjetas de Resumen Rápido con Fondos Suaves */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        <div className="bg-white rounded-lg p-6 border border-stone-200 shadow-sm flex items-center justify-between">
-          <div>
-            <p className="text-stone-500 text-sm font-medium uppercase tracking-wider">
-              Agenda de Hoy
-            </p>
-            <h3 className="text-3xl font-bold text-stone-900 mt-1">
-              {tareasHoy.length} Citas
-            </h3>
+      {/* Cards resumen */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: "16px", marginBottom: "32px" }}>
+        {[
+          { label: "Total clientes", valor: clientes.length, color: "#FFC800" },
+          { label: "Clientes activos", valor: activos.length, color: "#1D9E75" },
+          { label: "En evaluación", valor: enEvaluacion.length, color: "#378ADD" },
+          { label: "Sin rutina", valor: clientes.filter(c => !c.rutinaAsignada || c.rutinaAsignada === "Sin Asignar").length, color: "#E24B4A" },
+        ].map(card => (
+          <div key={card.label} style={estiloCard}>
+            <p style={{ fontSize: "12px", color: "#888", marginBottom: "8px" }}>{card.label}</p>
+            <p style={{ fontSize: "36px", fontWeight: "900", color: card.color, margin: 0 }}>{card.valor}</p>
           </div>
-          <div className="text-2xl text-stone-700 bg-amber-50/80 p-3 rounded-md border border-amber-100">
-            <i className="ti ti-calendar-event" />
-          </div>
-        </div>
-
-        <div className="bg-white rounded-lg p-6 border border-stone-200 shadow-sm flex items-center justify-between">
-          <div>
-            <p className="text-stone-500 text-sm font-medium uppercase tracking-wider">
-              Clientes Activos
-            </p>
-            <h3 className="text-3xl font-bold text-stone-900 mt-1">24</h3>
-          </div>
-          <div className="text-2xl text-stone-700 bg-stone-100 p-3 rounded-md border border-stone-200">
-            <i className="ti ti-users" />
-          </div>
-        </div>
-
-        <div className="bg-white rounded-lg p-6 border border-stone-200 shadow-sm flex items-center justify-between">
-          <div>
-            <p className="text-stone-500 text-sm font-medium uppercase tracking-wider">
-              Rutinas por Vencer
-            </p>
-            <h3 className="text-3xl font-bold text-amber-800 mt-1">2</h3>
-          </div>
-          <div className="text-2xl text-amber-800 bg-amber-100/60 p-3 rounded-md border border-amber-200">
-            <i className="ti ti-clock-alert" />
-          </div>
-        </div>
+        ))}
       </div>
 
-      {/* 3. Sección Principal de Trabajo */}
-      <div className="flex flex-col lg:flex-row gap-8">
-        
-        {/* Lista Ampliada del Programa Diario */}
-        <div className="flex-1 bg-white rounded-lg p-8 border border-stone-200 shadow-sm space-y-6">
-          <div className="flex items-center justify-between border-b border-stone-200 pb-5">
-            <div>
-              <h2 className="font-bold text-stone-900 text-xl">
-                Programa de Actividades de Hoy
-              </h2>
-              <p className="text-stone-500 text-sm mt-1">
-                Listado de citas agendadas para toma de métricas y entrenamiento
-              </p>
-            </div>
-            <span className="text-sm bg-stone-100 text-stone-700 px-4 py-2 rounded-md font-semibold border border-stone-200">
-              {new Date().toLocaleDateString("es-DO", {
-                weekday: "long",
-                day: "numeric",
-                month: "long",
-              })}
-            </span>
-          </div>
+      {/* Citas de hoy */}
+      <div style={{ ...estiloCard, marginBottom: "20px" }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "16px" }}>
+          <h3 style={{ fontSize: "15px", fontWeight: "900", color: "#0B0B0B", margin: 0 }}>
+            Programa de actividades de hoy
+          </h3>
+          <span style={{ fontSize: "13px", color: "#888" }}>
+            {hoy.toLocaleDateString("es-DO", { weekday: "long", day: "numeric", month: "long" })}
+          </span>
+        </div>
 
-          <div className="space-y-4">
-            {tareasHoy.map((tarea) => (
-              <div
-                key={tarea.id}
-                className="flex flex-col sm:flex-row sm:items-center justify-between p-6 rounded-md border border-stone-200/80 bg-[#FAF8F5]/60 hover:bg-white hover:border-stone-400 transition gap-6"
-              >
-                <div className="flex items-center gap-5">
-                  <div className="bg-stone-900 text-[#FFC800] font-bold text-sm px-4 py-3 rounded-md whitespace-nowrap">
-                    {tarea.hora}
+        {!token && eventosFirestore.length === 0 ? (
+          <div style={{ background: "#FFF8E1", borderRadius: "8px", padding: "16px", textAlign: "center" }}>
+            <p style={{ color: "#B8860B", fontSize: "13px", margin: 0 }}>
+              Inicia sesión con Google para ver tus citas del calendario
+            </p>
+          </div>
+        ) : eventos.length === 0 ? (
+          <div style={{ background: "#F5F5F5", borderRadius: "8px", padding: "24px", textAlign: "center" }}>
+            <p style={{ color: "#888", fontSize: "13px", margin: 0 }}>No tienes citas programadas para hoy</p>
+          </div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+            {eventos.map(evento => {
+              const inicio = evento.inicio
+                ? new Date(evento.inicio).toLocaleTimeString("es-DO", { hour: "2-digit", minute: "2-digit" })
+                : "Todo el día";
+              return (
+                <div key={evento.id} style={{
+                  display: "flex", alignItems: "center", gap: "16px",
+                  background: "#F5F5F5", borderRadius: "10px", padding: "14px 16px"
+                }}>
+                  <div style={{
+                    background: "#FFF8E1", color: "#0B0B0B", fontWeight: "900",
+                    fontSize: "12px", padding: "8px 12px", borderRadius: "8px",
+                    flexShrink: 0, whiteSpace: "nowrap", border: "1px solid #FFC800"
+                  }}>
+                    {inicio}
                   </div>
-                  <div className="space-y-1">
-                    <div className="flex items-center gap-3">
-                      <p className="font-bold text-stone-900 text-lg">
-                        {tarea.cliente}
-                      </p>
-                      <span className="text-xs bg-stone-200 text-stone-800 font-bold px-2.5 py-0.5 rounded-sm">
-                        {tarea.tag}
-                      </span>
-                    </div>
-                    <p className="text-stone-600 text-base">
-                      {tarea.tipo}
+                  <div style={{ flex: 1 }}>
+                    <p style={{ fontWeight: "700", fontSize: "14px", color: "#0B0B0B", margin: 0 }}>
+                      {evento.titulo || "Sin título"}
                     </p>
+                    {evento.descripcion && (
+                      <p style={{ fontSize: "12px", color: "#888", margin: "2px 0 0" }}>{evento.descripcion}</p>
+                    )}
                   </div>
-                </div>
-
-                <div className="flex items-center justify-between sm:justify-end gap-4 border-t sm:border-t-0 pt-4 sm:pt-0 border-stone-200">
-                  <span
-                    className={`text-xs px-3.5 py-1.5 rounded-sm font-bold uppercase tracking-wider ${
-                      tarea.estado === "En Proceso"
-                        ? "bg-amber-100 text-amber-900 border border-amber-300"
-                        : "bg-stone-200 text-stone-800 border border-stone-300"
-                    }`}
-                  >
-                    {tarea.estado}
+                  <span style={{
+                    fontSize: "11px", fontWeight: "700", padding: "4px 12px",
+                    borderRadius: "20px", background: "#FFC800", color: "#0B0B0B", flexShrink: 0
+                  }}>
+                    PENDIENTE
                   </span>
-                  <button className="bg-stone-900 text-white hover:bg-[#FFC800] hover:text-black font-semibold text-sm px-5 py-2.5 rounded-md transition border border-stone-900">
-                    Atender →
-                  </button>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "20px" }}>
+
+        {/* Clientes recientes */}
+        <div style={estiloCard}>
+          <h3 style={{ fontSize: "15px", fontWeight: "900", color: "#0B0B0B", marginBottom: "16px" }}>
+            Mis clientes
+          </h3>
+          {clientes.length === 0 ? (
+            <p style={{ color: "#888", fontSize: "13px" }}>No tienes clientes asignados aún</p>
+          ) : clientes.slice(0, 5).map(c => (
+            <div key={c.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "12px" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                <div style={{
+                  width: "36px", height: "36px", borderRadius: "50%", background: "#F5F5F5",
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  color: "#0B0B0B", fontWeight: "900", fontSize: "13px", flexShrink: 0
+                }}>
+                  {c.nombre?.[0]?.toUpperCase()}
+                </div>
+                <div>
+                  <p style={{ fontSize: "13px", fontWeight: "700", color: "#0B0B0B", margin: 0 }}>{c.nombre} {c.apellido}</p>
+                  <p style={{ fontSize: "11px", color: "#888", margin: 0 }}>{c.objetivo || "Sin objetivo"}</p>
                 </div>
               </div>
-            ))}
-          </div>
-        </div>
-
-        {/* Panel Lateral de Clientes Asignados */}
-        <div className="w-full lg:w-96 bg-white rounded-lg p-8 border border-stone-200 shadow-sm h-fit space-y-6">
-          <div className="flex justify-between items-center border-b border-stone-200 pb-5">
-            <div>
-              <h2 className="font-bold text-stone-900 text-lg">
-                Mis Clientes
-              </h2>
-              <p className="text-stone-500 text-xs mt-0.5">Expedientes activos</p>
+              <span style={{
+                fontSize: "11px", fontWeight: "700", padding: "3px 10px", borderRadius: "20px",
+                background: (c.estado === "Activo" || c.estado === "activo") ? "#E1F5EE" :
+                  c.estado === "En Evaluación" ? "#FFF8E1" : "#F5F5F5",
+                color: (c.estado === "Activo" || c.estado === "activo") ? "#085041" :
+                  c.estado === "En Evaluación" ? "#B8860B" : "#555"
+              }}>
+                {c.estado}
+              </span>
             </div>
-            <button className="text-sm text-stone-900 font-bold hover:underline">
-              Ver todos
-            </button>
-          </div>
+          ))}
+        </div>
 
-          <div className="space-y-4">
-            {resumenClientes.map((cliente) => (
-              <div
-                key={cliente.id}
-                className="p-5 border border-stone-200/80 rounded-md bg-[#FAF8F5]/60 hover:bg-white hover:border-stone-300 transition space-y-3"
-              >
-                <div className="flex justify-between items-start">
-                  <p className="font-bold text-stone-900 text-base">
-                    {cliente.nombre}
-                  </p>
-                  <span
-                    className={`text-xs font-bold px-2.5 py-1 rounded-sm ${
-                      cliente.estado === "Por Vencer"
-                        ? "bg-amber-100 text-amber-900 border border-amber-200"
-                        : "bg-emerald-100 text-emerald-900 border border-emerald-200"
-                    }`}
-                  >
-                    {cliente.estado}
-                  </span>
+        {/* Acciones rápidas */}
+        <div style={estiloCard}>
+          <h3 style={{ fontSize: "15px", fontWeight: "900", color: "#0B0B0B", marginBottom: "16px" }}>
+            Acciones rápidas
+          </h3>
+          <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+            {[
+              { label: "Ver mis clientes", desc: "Consulta el directorio completo" },
+              { label: "Ir al calendario", desc: "Revisa tu agenda de hoy" },
+              { label: "Biblioteca de rutinas", desc: "Gestiona y asigna rutinas" },
+            ].map(acc => (
+              <div key={acc.label} style={{
+                background: "#F5F5F5", borderRadius: "10px", padding: "14px 16px",
+                cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center"
+              }}>
+                <div>
+                  <p style={{ fontSize: "13px", fontWeight: "700", color: "#0B0B0B", margin: 0 }}>{acc.label}</p>
+                  <p style={{ fontSize: "11px", color: "#555", margin: "2px 0 0" }}>{acc.desc}</p>
                 </div>
-                <p className="text-stone-600 text-sm">{cliente.plan}</p>
-
-                <div className="pt-3 border-t border-stone-200 flex justify-between items-center">
-                  <span className="text-xs text-stone-400 font-mono">
-                    {cliente.id}
-                  </span>
-                  <button className="text-sm font-semibold text-stone-900 hover:text-amber-600 transition">
-                    Ver Expediente →
-                  </button>
-                </div>
+                <span style={{ color: "#0B0B0B", fontSize: "16px" }}>→</span>
               </div>
             ))}
           </div>
         </div>
-
       </div>
     </div>
   );

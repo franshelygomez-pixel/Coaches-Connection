@@ -17,5 +17,6 @@ export const auth = getAuth(app);
 export const provider = new GoogleAuthProvider();
 provider.addScope("https://www.googleapis.com/auth/calendar");
 provider.addScope("https://www.googleapis.com/auth/calendar.events");
+provider.setCustomParameters({ prompt: "consent", access_type: "offline" });
 
 export const db = getFirestore(app);
