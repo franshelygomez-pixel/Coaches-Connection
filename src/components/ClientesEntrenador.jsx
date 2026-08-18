@@ -1,459 +1,582 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import {
+  collection,
+  query,
+  where,
+  onSnapshot,
+  addDoc,
+  updateDoc,
+  doc,
+  serverTimestamp,
+} from "firebase/firestore";
+// AJUSTA esta ruta si tu firebase.js está en otro lugar
+import { db, auth } from "../firebase";
 
-export default function ClientesEntrenador() {
+// --- Mismo lenguaje de diseño que InicioEntrenador.jsx ---
+const estiloCard = {
+  background: "#FFFFFF",
+  border: "0.5px solid #E5E5E5",
+  borderRadius: "12px",
+  padding: "20px 24px",
+};
+
+const inputStyle = {
+  width: "100%",
+  background: "#F5F5F5",
+  border: "0.5px solid #E5E5E5",
+  borderRadius: "8px",
+  padding: "10px 12px",
+  fontSize: "13px",
+  color: "#0B0B0B",
+  outline: "none",
+  boxSizing: "border-box",
+};
+
+const labelStyle = {
+  fontSize: "11px",
+  fontWeight: "700",
+  color: "#888",
+  textTransform: "uppercase",
+  letterSpacing: "0.03em",
+  marginBottom: "6px",
+  display: "block",
+};
+
+// Normaliza estado leído de Firestore (soporta datos viejos en minúsculas)
+const normalizarEstado = (valor) => {
+  const v = (valor || "").toLowerCase();
+  if (v.startsWith("activo")) return "Activo";
+  if (v.includes("evalu")) return "En Evaluación";
+  if (v.startsWith("inactivo")) return "Inactivo";
+  return "En Evaluación";
+};
+
+const ESTADO_COLORES = {
+  "Activo": { bg: "#E1F5EE", color: "#085041" },
+  "En Evaluación": { bg: "#FFF8E1", color: "#B8860B" },
+  "Inactivo": { bg: "#F5F5F5", color: "#555" },
+};
+
+const FILTROS = ["Todos", "Activo", "En Evaluación", "Inactivo"];
+
+export default function ClientesEntrenador({ usuario }) {
   const [modoCrear, setModoCrear] = useState(false);
   const [filtroEstado, setFiltroEstado] = useState("Todos");
   const [busqueda, setBusqueda] = useState("");
   const [clienteSeleccionado, setClienteSeleccionado] = useState(null);
 
-  // Lista de clientes
-  const [clientes, setClientes] = useState([
-    {
-      id: "CLI-101",
-      nombre: "Juan Pérez",
-      email: "juan.perez@email.com",
-      telefono: "+1 (809) 555-0192",
-      estado: "Activo",
-      plan: "Personalizado Premium",
-      objetivo: "Hipertrofia",
-      pesoInicial: "82 kg",
-      pesoActual: "78.5 kg",
-      rutinaAsignada: "Hipertrofia • Torso / Pierna",
-      fechaRegistro: "12 May 2026",
-    },
-    {
-      id: "CLI-102",
-      nombre: "María Gómez",
-      email: "maria.gomez@email.com",
-      telefono: "+1 (829) 555-0143",
-      estado: "En Evaluación",
-      plan: "Acondicionamiento Base",
-      objetivo: "Pérdida de Grasa",
-      pesoInicial: "68 kg",
-      pesoActual: "67.2 kg",
-      rutinaAsignada: "Reacondicionamiento Físico",
-      fechaRegistro: "28 Jun 2026",
-    },
-    {
-      id: "CLI-103",
-      nombre: "Pedro Martínez",
-      email: "pedro.m@email.com",
-      telefono: "+1 (849) 555-0881",
-      estado: "Activo",
-      plan: "Fuerza Elite",
-      objetivo: "Fuerza Máxima",
-      pesoInicial: "90 kg",
-      pesoActual: "91.2 kg",
-      rutinaAsignada: "Fuerza Máxima • Powerbuilding",
-      fechaRegistro: "03 Feb 2026",
-    },
-    {
-      id: "CLI-104",
-      nombre: "Carla Sánchez",
-      email: "carla.s@email.com",
-      telefono: "+1 (809) 555-0322",
-      estado: "Inactivo",
-      plan: "Salud Integral",
-      objetivo: "Movilidad",
-      pesoInicial: "62 kg",
-      pesoActual: "62 kg",
-      rutinaAsignada: "Sin Asignar",
-      fechaRegistro: "15 Ene 2026",
-    },
-  ]);
+  const [clientes, setClientes] = useState([]);
+  const [rutinas, setRutinas] = useState([]);
+  const [cargando, setCargando] = useState(true);
+  const [error, setError] = useState(null);
+  const [guardando, setGuardando] = useState(false);
 
-  // Estado local para los campos del formulario
+  const [clienteParaAsignarRutina, setClienteParaAsignarRutina] = useState(null);
+  const [rutinaSeleccionada, setRutinaSeleccionada] = useState("");
+  const [asignandoRutina, setAsignandoRutina] = useState(false);
+
+  const coachId = usuario?.uid || auth.currentUser?.uid;
+
   const [nuevoCliente, setNuevoCliente] = useState({
     nombre: "",
+    apellido: "",
     email: "",
     telefono: "",
     estado: "En Evaluación",
-    pesoActual: "",
-    estatura: "",
-    porcentajeGrasa: "",
     edad: "",
     objetivo: "Hipertrofia / Masa Muscular",
     plan: "Personalizado Premium",
     observaciones: "",
   });
 
-  // Función para guardar el nuevo cliente
-  const handleGuardarCliente = (e) => {
-    e.preventDefault();
-    if (!nuevoCliente.nombre || !nuevoCliente.email) return;
+  // --- Historial de mediciones (ficha antropométrica) del cliente en el expediente ---
+  const [mediciones, setMediciones] = useState([]);
+  const [cargandoMediciones, setCargandoMediciones] = useState(false);
+  const [mostrarFormMedicion, setMostrarFormMedicion] = useState(false);
+  const [guardandoMedicion, setGuardandoMedicion] = useState(false);
+  const [nuevaMedicion, setNuevaMedicion] = useState({
+    fecha: new Date().toISOString().split("T")[0],
+    peso: "",
+    estatura: "",
+    cintura: "",
+    cadera: "",
+  });
 
-    const clienteCreado = {
-      id: `CLI-${100 + clientes.length + 1}`,
-      nombre: nuevoCliente.nombre,
-      email: nuevoCliente.email,
-      telefono: nuevoCliente.telefono || "+1 (800) 000-0000",
-      estado: nuevoCliente.estado,
-      plan: nuevoCliente.plan,
-      objetivo: nuevoCliente.objetivo,
-      pesoInicial: nuevoCliente.pesoActual ? `${nuevoCliente.pesoActual} kg` : "--",
-      pesoActual: nuevoCliente.pesoActual ? `${nuevoCliente.pesoActual} kg` : "--",
-      rutinaAsignada: "Sin Asignar",
-      fechaRegistro: new Date().toLocaleDateString("es-ES", {
-        day: "2-digit",
-        month: "short",
-        year: "numeric",
-      }),
-    };
+  // --- Escucha en tiempo real de los clientes del coach logueado ---
+  useEffect(() => {
+    if (!coachId) {
+      setCargando(false);
+      setError("No se detectó una sesión activa.");
+      return;
+    }
 
-    // Uso de setClientes para actualizar la lista local
-    setClientes([clienteCreado, ...clientes]);
+    const q = query(collection(db, "clientes"), where("coachId", "==", coachId));
 
-    // Limpieza de campos y retorno al directorio
-    setNuevoCliente({
-      nombre: "",
-      email: "",
-      telefono: "",
-      estado: "En Evaluación",
-      pesoActual: "",
-      estatura: "",
-      porcentajeGrasa: "",
-      edad: "",
-      objetivo: "Hipertrofia / Masa Muscular",
-      plan: "Personalizado Premium",
-      observaciones: "",
+    const unsubscribe = onSnapshot(
+      q,
+      (snapshot) => {
+        const lista = snapshot.docs.map((docSnap) => {
+          const data = docSnap.data();
+          return {
+            docId: docSnap.id,
+            nombre: `${data.nombre || ""} ${data.apellido || ""}`.trim() || "Sin nombre",
+            email: data.email || "",
+            telefono: data.telefono || "--",
+            estado: normalizarEstado(data.estado),
+            plan: data.plan || "Sin plan asignado",
+            objetivo: data.objetivo || "Sin definir",
+            pesoActual: data.pesoActual ? `${data.pesoActual} kg` : "--",
+            rutinaAsignada: data.rutinaAsignada || "Sin Asignar",
+          };
+        });
+        lista.sort((a, b) => a.nombre.localeCompare(b.nombre));
+        setClientes(lista);
+        setCargando(false);
+      },
+      (err) => {
+        console.error("Error al leer clientes:", err);
+        setError("No se pudieron cargar los clientes. Verifica las reglas de Firestore.");
+        setCargando(false);
+      }
+    );
+
+    return () => unsubscribe();
+  }, [coachId]);
+
+  // --- Rutinas del coach, para el modal de asignación ---
+  useEffect(() => {
+    if (!coachId) return;
+    const q = query(collection(db, "rutinas"), where("coachId", "==", coachId));
+    const unsub = onSnapshot(q, (snap) => {
+      const lista = snap.docs.map((d) => ({ docId: d.id, ...d.data() }));
+      lista.sort((a, b) => (a.nombre || "").localeCompare(b.nombre || ""));
+      setRutinas(lista);
     });
-    setModoCrear(false);
+    return () => unsub();
+  }, [coachId]);
+
+  // --- Historial de mediciones del cliente que tiene el expediente abierto ---
+  useEffect(() => {
+    if (!clienteSeleccionado) {
+      setMediciones([]);
+      return;
+    }
+    setCargandoMediciones(true);
+    const q = query(collection(db, "mediciones"), where("clienteId", "==", clienteSeleccionado.docId));
+    const unsub = onSnapshot(
+      q,
+      (snap) => {
+        const lista = snap.docs.map((d) => ({ docId: d.id, ...d.data() }));
+        lista.sort((a, b) => (b.fecha || "").localeCompare(a.fecha || ""));
+        setMediciones(lista);
+        setCargandoMediciones(false);
+      },
+      (err) => {
+        console.error("Error leyendo mediciones:", err);
+        setCargandoMediciones(false);
+      }
+    );
+    return () => unsub();
+  }, [clienteSeleccionado?.docId]);
+
+  const handleGuardarCliente = async (e) => {
+    e.preventDefault();
+    if (!nuevoCliente.nombre || !nuevoCliente.email || !coachId) return;
+
+    setGuardando(true);
+    try {
+      await addDoc(collection(db, "clientes"), {
+        nombre: nuevoCliente.nombre,
+        apellido: nuevoCliente.apellido || "",
+        email: nuevoCliente.email,
+        telefono: nuevoCliente.telefono || "",
+        estado: nuevoCliente.estado,
+        coachId,
+        creadoEn: serverTimestamp(),
+        objetivo: nuevoCliente.objetivo,
+        plan: nuevoCliente.plan,
+        edad: nuevoCliente.edad || "",
+        observaciones: nuevoCliente.observaciones || "",
+        rutinaAsignada: "Sin Asignar",
+      });
+
+      setNuevoCliente({
+        nombre: "", apellido: "", email: "", telefono: "",
+        estado: "En Evaluación", edad: "",
+        objetivo: "Hipertrofia / Masa Muscular", plan: "Personalizado Premium", observaciones: "",
+      });
+      setModoCrear(false);
+    } catch (err) {
+      console.error("Error al guardar cliente:", err);
+      setError("No se pudo guardar el cliente. Intenta de nuevo.");
+    } finally {
+      setGuardando(false);
+    }
   };
 
-  // Filtrado de clientes por estado y búsqueda
+  const handleCambiarEstado = async (cliente, nuevoEstado) => {
+    try {
+      await updateDoc(doc(db, "clientes", cliente.docId), { estado: nuevoEstado });
+      setClienteSeleccionado((prev) => (prev ? { ...prev, estado: nuevoEstado } : prev));
+    } catch (err) {
+      console.error("Error al actualizar estado:", err);
+      setError("No se pudo actualizar el estado del cliente.");
+    }
+  };
+
+  const abrirAsignarRutina = (cliente) => {
+    setClienteParaAsignarRutina(cliente);
+    setRutinaSeleccionada(cliente.rutinaId || "");
+  };
+
+  const handleConfirmarAsignacion = async (e) => {
+    e.preventDefault();
+    if (!clienteParaAsignarRutina) return;
+
+    setAsignandoRutina(true);
+    try {
+      if (rutinaSeleccionada === "") {
+        // Quitar rutina asignada
+        await updateDoc(doc(db, "clientes", clienteParaAsignarRutina.docId), {
+          rutinaAsignada: "Sin Asignar",
+          rutinaId: "",
+        });
+      } else {
+        const rutina = rutinas.find((r) => r.docId === rutinaSeleccionada);
+        if (!rutina) return;
+        await updateDoc(doc(db, "clientes", clienteParaAsignarRutina.docId), {
+          rutinaAsignada: rutina.nombre,
+          rutinaId: rutina.docId,
+        });
+      }
+      setClienteParaAsignarRutina(null);
+      setRutinaSeleccionada("");
+    } catch (err) {
+      console.error("Error al asignar rutina:", err);
+      setError("No se pudo asignar la rutina.");
+    } finally {
+      setAsignandoRutina(false);
+    }
+  };
+
+  // --- IMC: cálculo y clasificación (rangos estándar OMS) ---
+  const clasificarIMC = (imc) => {
+    if (imc < 18.5) return { label: "Bajo peso", bg: "#EAF2FB", color: "#2E5D9A" };
+    if (imc < 25) return { label: "Normal", bg: "#E1F5EE", color: "#085041" };
+    if (imc < 30) return { label: "Sobrepeso", bg: "#FFF8E1", color: "#B8860B" };
+    return { label: "Obesidad", bg: "#FDECEC", color: "#B02A2A" };
+  };
+
+  const handleGuardarMedicion = async (e) => {
+    e.preventDefault();
+    if (!clienteSeleccionado || !nuevaMedicion.peso || !nuevaMedicion.estatura) return;
+
+    const peso = parseFloat(nuevaMedicion.peso);
+    const estatura = parseFloat(nuevaMedicion.estatura);
+    const cintura = nuevaMedicion.cintura ? parseFloat(nuevaMedicion.cintura) : null;
+    const cadera = nuevaMedicion.cadera ? parseFloat(nuevaMedicion.cadera) : null;
+
+    const imc = Math.round((peso / ((estatura / 100) ** 2)) * 10) / 10;
+    const icc = cintura && cadera ? Math.round((cintura / cadera) * 100) / 100 : null;
+
+    setGuardandoMedicion(true);
+    try {
+      await addDoc(collection(db, "mediciones"), {
+        clienteId: clienteSeleccionado.docId,
+        coachId,
+        fecha: nuevaMedicion.fecha,
+        peso,
+        estatura,
+        cintura,
+        cadera,
+        imc,
+        icc,
+        creadoEn: serverTimestamp(),
+      });
+
+      // Denormalizamos el último peso/estatura en el cliente para que la tarjeta/lista se actualice sin ir al historial
+      await updateDoc(doc(db, "clientes", clienteSeleccionado.docId), {
+        pesoActual: peso,
+        estatura,
+      });
+
+      setNuevaMedicion({ fecha: new Date().toISOString().split("T")[0], peso: "", estatura: "", cintura: "", cadera: "" });
+      setMostrarFormMedicion(false);
+    } catch (err) {
+      console.error("Error al guardar medición:", err);
+      setError("No se pudo guardar la medición.");
+    } finally {
+      setGuardandoMedicion(false);
+    }
+  };
+
   const clientesFiltrados = clientes.filter((c) => {
     const cumpleFiltro = filtroEstado === "Todos" || c.estado === filtroEstado;
     const cumpleBusqueda =
       c.nombre.toLowerCase().includes(busqueda.toLowerCase()) ||
-      c.id.toLowerCase().includes(busqueda.toLowerCase());
+      c.email.toLowerCase().includes(busqueda.toLowerCase());
     return cumpleFiltro && cumpleBusqueda;
   });
 
+  const totalActivos = clientes.filter((c) => c.estado === "Activo").length;
+  const totalEvaluacion = clientes.filter((c) => c.estado === "En Evaluación").length;
+
+  if (cargando) {
+    return (
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "200px" }}>
+        <p style={{ color: "#888" }}>Cargando...</p>
+      </div>
+    );
+  }
+
   return (
-    <div className="space-y-8 font-sans text-stone-800 bg-[#FAF8F5] p-6 sm:p-8 rounded-xl border border-stone-200/60 min-h-full">
-      
-      {/* Header estilo Warm Marfil */}
-      <div className="bg-[#F4EFEA] border border-stone-300/70 rounded-lg py-8 px-8 shadow-xs">
-        <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center gap-6">
-          <div className="space-y-2 max-w-3xl">
-            <div className="flex items-center gap-3">
-              <span className="bg-[#FFC800] text-stone-900 text-xs font-bold px-3 py-1 rounded-xs uppercase tracking-wide">
-                Smart Fit • Gestión
-              </span>
-              <span className="text-stone-600 text-xs font-medium uppercase tracking-wider">
-                | Directorio de Atletas
-              </span>
-            </div>
-
-            <h1 className="text-3xl lg:text-4xl font-bold text-stone-900 tracking-tight leading-snug">
-              {modoCrear ? "Registro de Nuevo Cliente" : "Gestión de Clientes"}
-            </h1>
-
-            <p className="text-stone-600 text-base leading-relaxed">
-              {modoCrear
-                ? "Ingrese la información personal, datos antropométricos e historial para dar de alta un nuevo perfil."
-                : "Consulte expedientes, asigne rutinas y realice el seguimiento antropométrico de sus clientes."}
-            </p>
-          </div>
-
-          <button
-            onClick={() => setModoCrear(!modoCrear)}
-            className="bg-stone-900 text-stone-50 font-semibold px-6 py-3.5 rounded-md text-base hover:bg-stone-800 transition shadow-xs cursor-pointer shrink-0"
-          >
-            {modoCrear ? "← Volver al Directorio" : "+ Nuevo Cliente"}
-          </button>
+    <div>
+      {/* Encabezado */}
+      <div style={{ marginBottom: "28px", display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: "16px" }}>
+        <div>
+          <p style={{ fontSize: "13px", color: "#888", margin: "0 0 4px" }}>
+            {modoCrear ? "Nuevo registro" : "Directorio de atletas"}
+          </p>
+          <h2 style={{ fontSize: "26px", fontWeight: "900", color: "#0B0B0B", margin: 0 }}>
+            {modoCrear ? "Registro de Cliente" : "Gestión de Clientes"}
+          </h2>
+          <p style={{ fontSize: "14px", color: "#888", marginTop: "6px" }}>
+            {modoCrear
+              ? "Ingresa la información del cliente para darlo de alta en Firestore."
+              : "Consulta expedientes, asigna rutinas y da seguimiento a tus clientes."}
+          </p>
         </div>
+
+        <button
+          onClick={() => setModoCrear(!modoCrear)}
+          style={{
+            background: "#FFC800", color: "#0B0B0B", fontWeight: "900",
+            fontSize: "13px", padding: "12px 20px", borderRadius: "10px",
+            border: "none", cursor: "pointer", flexShrink: 0,
+          }}
+        >
+          {modoCrear ? "← Volver al Directorio" : "Nuevo Cliente"}
+        </button>
       </div>
 
-      {/* VISTA 1: DIRECTORIO DE CLIENTES */}
+      {error && (
+        <div style={{
+          background: "#FDECEC", border: "0.5px solid #F3C4C4", color: "#B02A2A",
+          borderRadius: "10px", padding: "12px 16px", fontSize: "13px", marginBottom: "20px",
+        }}>
+          {error}
+        </div>
+      )}
+
       {!modoCrear ? (
-        <div className="space-y-6">
-          
-          {/* Métricas Rápidas */}
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-            <div className="bg-white p-5 rounded-lg border border-stone-200 shadow-xs flex justify-between items-center">
-              <div>
-                <span className="text-xs font-medium text-stone-500 uppercase tracking-wider block">Activos</span>
-                <span className="text-2xl font-bold text-stone-900">
-                  {clientes.filter((c) => c.estado === "Activo").length}
-                </span>
-              </div>
-              <div className="w-10 h-10 bg-emerald-50 text-emerald-700 rounded-md flex items-center justify-center font-bold text-lg">
-                ✓
-              </div>
-            </div>
-
-            <div className="bg-white p-5 rounded-lg border border-stone-200 shadow-xs flex justify-between items-center">
-              <div>
-                <span className="text-xs font-medium text-stone-500 uppercase tracking-wider block">En Evaluación</span>
-                <span className="text-2xl font-bold text-stone-900">
-                  {clientes.filter((c) => c.estado === "En Evaluación").length}
-                </span>
-              </div>
-              <div className="w-10 h-10 bg-amber-50 text-amber-700 rounded-md flex items-center justify-center font-bold text-lg">
-                ⏱
-              </div>
-            </div>
-
-            <div className="bg-white p-5 rounded-lg border border-stone-200 shadow-xs flex justify-between items-center">
-              <div>
-                <span className="text-xs font-medium text-stone-500 uppercase tracking-wider block">Total Registrados</span>
-                <span className="text-2xl font-bold text-stone-900">{clientes.length}</span>
-              </div>
-              <div className="w-10 h-10 bg-[#FAF8F5] text-stone-700 border border-stone-200 rounded-md flex items-center justify-center font-bold text-lg">
-                👥
-              </div>
-            </div>
-          </div>
-
-          {/* Filtros de Búsqueda y Estado */}
-          <div className="bg-white p-6 rounded-lg border border-stone-200 shadow-xs flex flex-col sm:flex-row items-center justify-between gap-4">
-            <div className="flex items-center gap-2 overflow-x-auto w-full sm:w-auto pb-2 sm:pb-0">
-              {["Todos", "Activo", "En Evaluación", "Inactivo"].map((estado) => (
-                <button
-                  key={estado}
-                  onClick={() => setFiltroEstado(estado)}
-                  className={`text-xs font-bold px-4 py-2.5 rounded-md transition-all whitespace-nowrap cursor-pointer ${
-                    filtroEstado === estado
-                      ? "bg-[#FFC800] text-stone-900 border border-amber-400"
-                      : "bg-[#FAF8F5] text-stone-600 border border-stone-200/80 hover:bg-stone-100 hover:text-stone-900"
-                  }`}
-                >
-                  {estado}
-                </button>
-              ))}
-            </div>
-
-            <div className="w-full sm:w-80">
-              <input
-                type="text"
-                value={busqueda}
-                onChange={(e) => setBusqueda(e.target.value)}
-                placeholder="Buscar por cliente o código..."
-                className="w-full bg-[#FAF8F5] border border-stone-200/80 rounded-md px-4 py-2.5 text-sm text-stone-900 focus:outline-none focus:border-stone-400 transition-colors placeholder:text-stone-400"
-              />
-            </div>
-          </div>
-
-          {/* Tarjetas de Clientes */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            {clientesFiltrados.map((cliente) => (
-              <div
-                key={cliente.id}
-                className="bg-white rounded-lg border border-stone-200 shadow-xs p-6 hover:border-stone-300 transition flex flex-col justify-between space-y-6"
-              >
-                <div className="space-y-4">
-                  <div className="flex justify-between items-center">
-                    <span className="text-xs font-mono font-bold text-stone-400">
-                      {cliente.id}
-                    </span>
-                    <span
-                      className={`text-xs font-bold px-3 py-1 rounded-xs border ${
-                        cliente.estado === "Activo"
-                          ? "bg-emerald-50 text-emerald-800 border-emerald-200"
-                          : cliente.estado === "En Evaluación"
-                          ? "bg-amber-50 text-amber-800 border-amber-200"
-                          : "bg-stone-100 text-stone-600 border-stone-200"
-                      }`}
-                    >
-                      {cliente.estado}
-                    </span>
-                  </div>
-
-                  <div>
-                    <h3 className="font-bold text-stone-900 text-xl leading-snug">
-                      {cliente.nombre}
-                    </h3>
-                    <p className="text-xs text-stone-500 mt-0.5">{cliente.email} • {cliente.telefono}</p>
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-3 bg-[#FAF8F5]/70 p-3.5 rounded-md border border-stone-200/80 text-xs">
-                    <div>
-                      <span className="block text-stone-500 font-medium uppercase tracking-wider mb-0.5">
-                        Objetivo
-                      </span>
-                      <span className="font-bold text-stone-900 text-sm">{cliente.objetivo}</span>
-                    </div>
-                    <div>
-                      <span className="block text-stone-500 font-medium uppercase tracking-wider mb-0.5">
-                        Plan Actual
-                      </span>
-                      <span className="font-bold text-stone-900 text-sm">{cliente.plan}</span>
-                    </div>
-                  </div>
-
-                  <div className="flex items-center justify-between text-xs text-stone-600 pt-1 px-1">
-                    <span>Rutina: <strong className="text-stone-900">{cliente.rutinaAsignada}</strong></span>
-                    <span>Peso: <strong className="text-stone-900">{cliente.pesoActual}</strong></span>
-                  </div>
-                </div>
-
-                <div className="pt-4 border-t border-stone-200 flex items-center gap-3">
-                  <button 
-                    onClick={() => setClienteSeleccionado(cliente)}
-                    className="flex-1 bg-stone-900 text-white hover:bg-[#FFC800] hover:text-stone-900 font-semibold text-sm py-2.5 rounded-md transition border border-stone-900 cursor-pointer"
-                  >
-                    Ver Expediente
-                  </button>
-                  <button className="bg-[#FAF8F5] text-stone-700 hover:text-stone-900 font-medium px-4 py-2.5 rounded-md border border-stone-200 text-xs transition cursor-pointer">
-                    Asignar Rutina
-                  </button>
-                </div>
+        <>
+          {/* Cards resumen */}
+          <div style={{
+            display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+            gap: "16px", marginBottom: "24px",
+          }}>
+            {[
+              { label: "Total registrados", valor: clientes.length, color: "#FFC800" },
+              { label: "Activos", valor: totalActivos, color: "#1D9E75" },
+              { label: "En evaluación", valor: totalEvaluacion, color: "#378ADD" },
+            ].map((card) => (
+              <div key={card.label} style={estiloCard}>
+                <p style={{ fontSize: "12px", color: "#888", marginBottom: "8px" }}>{card.label}</p>
+                <p style={{ fontSize: "36px", fontWeight: "900", color: card.color, margin: 0 }}>{card.valor}</p>
               </div>
             ))}
           </div>
-        </div>
-      ) : (
-        /* VISTA 2: FORMULARIO DE ALTA / CREAR CLIENTE */
-        <div className="bg-white rounded-lg p-8 border border-stone-200 shadow-xs max-w-4xl mx-auto space-y-8">
-          
-          <div className="border-b border-stone-200 pb-4">
-            <h2 className="font-bold text-stone-900 text-xl">Expediente Inicial del Cliente</h2>
-            <p className="text-sm text-stone-500">Complete los campos obligatorios para registrar al cliente en la base de datos local.</p>
+
+          {/* Filtros y búsqueda */}
+          <div style={{
+            ...estiloCard, marginBottom: "20px", padding: "16px 20px",
+            display: "flex", flexWrap: "wrap", justifyContent: "space-between", alignItems: "center", gap: "12px",
+          }}>
+            <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+              {FILTROS.map((f) => (
+                <button
+                  key={f}
+                  onClick={() => setFiltroEstado(f)}
+                  style={{
+                    fontSize: "12px", fontWeight: "700", padding: "8px 14px",
+                    borderRadius: "8px", border: "none", cursor: "pointer",
+                    background: filtroEstado === f ? "#FFC800" : "#F5F5F5",
+                    color: "#0B0B0B",
+                  }}
+                >
+                  {f}
+                </button>
+              ))}
+            </div>
+            <input
+              type="text"
+              value={busqueda}
+              onChange={(e) => setBusqueda(e.target.value)}
+              placeholder="Buscar por nombre o correo..."
+              style={{ ...inputStyle, width: "260px" }}
+            />
           </div>
 
-          <form className="space-y-6" onSubmit={handleGuardarCliente}>
-            
-            {/* Sección 1: Datos Personales */}
-            <div className="space-y-4">
-              <h3 className="text-xs font-bold text-stone-500 uppercase tracking-wider border-l-2 border-[#FFC800] pl-2">
-                1. Información Personal
-              </h3>
+          {/* Lista de clientes */}
+          {clientesFiltrados.length === 0 ? (
+            <div style={{ ...estiloCard, textAlign: "center", padding: "40px" }}>
+              <p style={{ color: "#888", fontSize: "13px", margin: 0 }}>
+                No hay clientes que coincidan con este filtro.
+              </p>
+            </div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+              {clientesFiltrados.map((cliente) => {
+                const colores = ESTADO_COLORES[cliente.estado];
+                return (
+                  <div key={cliente.docId} style={estiloCard}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "16px", flexWrap: "wrap" }}>
+                      <div style={{
+                        width: "44px", height: "44px", borderRadius: "50%", background: "#F5F5F5",
+                        display: "flex", alignItems: "center", justifyContent: "center",
+                        color: "#0B0B0B", fontWeight: "900", fontSize: "16px", flexShrink: 0,
+                      }}>
+                        {cliente.nombre.charAt(0).toUpperCase()}
+                      </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      <div style={{ flex: 1, minWidth: "220px" }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                          <p style={{ fontSize: "15px", fontWeight: "900", color: "#0B0B0B", margin: 0 }}>
+                            {cliente.nombre}
+                          </p>
+                          <span style={{
+                            fontSize: "10px", fontWeight: "700", padding: "3px 10px", borderRadius: "20px",
+                            background: colores.bg, color: colores.color, textTransform: "uppercase",
+                          }}>
+                            {cliente.estado}
+                          </span>
+                        </div>
+                        <p style={{ fontSize: "12px", color: "#888", margin: "2px 0 0" }}>
+                          {cliente.email} · {cliente.telefono}
+                        </p>
+
+                        <div style={{ display: "flex", flexWrap: "wrap", gap: "16px", marginTop: "10px", fontSize: "12px", color: "#555" }}>
+                          <span>Objetivo: <strong style={{ color: "#0B0B0B" }}>{cliente.objetivo}</strong></span>
+                          <span>Plan: <strong style={{ color: "#0B0B0B" }}>{cliente.plan}</strong></span>
+                          <span>Rutina: <strong style={{ color: "#0B0B0B" }}>{cliente.rutinaAsignada}</strong></span>
+                          <span>Peso: <strong style={{ color: "#0B0B0B" }}>{cliente.pesoActual}</strong></span>
+                        </div>
+                      </div>
+
+                      <div style={{ display: "flex", gap: "8px", flexShrink: 0 }}>
+                        <button
+                          onClick={() => setClienteSeleccionado(cliente)}
+                          style={{
+                            background: "#0B0B0B", color: "#FFF", fontWeight: "700", fontSize: "12px",
+                            padding: "10px 16px", borderRadius: "8px", border: "none", cursor: "pointer",
+                          }}
+                        >
+                          Ver Expediente
+                        </button>
+                        <button
+                          onClick={() => abrirAsignarRutina(cliente)}
+                          style={{
+                            background: "#F5F5F5", color: "#0B0B0B", fontWeight: "700", fontSize: "12px",
+                            padding: "10px 16px", borderRadius: "8px", border: "0.5px solid #E5E5E5", cursor: "pointer",
+                          }}
+                        >
+                          Asignar Rutina
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </>
+      ) : (
+        /* Formulario de alta */
+        <div style={{ ...estiloCard, maxWidth: "720px" }}>
+          <form onSubmit={handleGuardarCliente} style={{ display: "flex", flexDirection: "column", gap: "24px" }}>
+            <div>
+              <p style={{ fontSize: "12px", fontWeight: "900", color: "#FFC800", textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: "12px" }}>
+                1. Información Personal
+              </p>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "14px" }}>
                 <div>
-                  <label className="block text-xs font-medium text-stone-600 uppercase tracking-wider mb-1.5">
-                    Nombre Completo *
-                  </label>
+                  <label style={labelStyle}>Nombre *</label>
                   <input
-                    type="text"
-                    required
+                    type="text" required style={inputStyle}
                     value={nuevoCliente.nombre}
                     onChange={(e) => setNuevoCliente({ ...nuevoCliente, nombre: e.target.value })}
-                    placeholder="Ej. Carlos Rodríguez"
-                    className="w-full bg-[#FAF8F5] border border-stone-200/80 rounded-md p-3 text-sm text-stone-900 focus:outline-none focus:border-stone-400 transition-colors placeholder:text-stone-400"
+                    placeholder="Ej. Carlos"
                   />
                 </div>
-
                 <div>
-                  <label className="block text-xs font-medium text-stone-600 uppercase tracking-wider mb-1.5">
-                    Correo Electrónico *
-                  </label>
+                  <label style={labelStyle}>Apellido</label>
                   <input
-                    type="email"
-                    required
+                    type="text" style={inputStyle}
+                    value={nuevoCliente.apellido}
+                    onChange={(e) => setNuevoCliente({ ...nuevoCliente, apellido: e.target.value })}
+                    placeholder="Ej. Rodríguez"
+                  />
+                </div>
+                <div>
+                  <label style={labelStyle}>Correo Electrónico *</label>
+                  <input
+                    type="email" required style={inputStyle}
                     value={nuevoCliente.email}
                     onChange={(e) => setNuevoCliente({ ...nuevoCliente, email: e.target.value })}
                     placeholder="carlos@email.com"
-                    className="w-full bg-[#FAF8F5] border border-stone-200/80 rounded-md p-3 text-sm text-stone-900 focus:outline-none focus:border-stone-400 transition-colors placeholder:text-stone-400"
                   />
                 </div>
-
                 <div>
-                  <label className="block text-xs font-medium text-stone-600 uppercase tracking-wider mb-1.5">
-                    Teléfono / WhatsApp
-                  </label>
+                  <label style={labelStyle}>Teléfono</label>
                   <input
-                    type="text"
+                    type="text" style={inputStyle}
                     value={nuevoCliente.telefono}
                     onChange={(e) => setNuevoCliente({ ...nuevoCliente, telefono: e.target.value })}
                     placeholder="+1 (809) 000-0000"
-                    className="w-full bg-[#FAF8F5] border border-stone-200/80 rounded-md p-3 text-sm text-stone-900 focus:outline-none focus:border-stone-400 transition-colors placeholder:text-stone-400"
                   />
                 </div>
-
                 <div>
-                  <label className="block text-xs font-medium text-stone-600 uppercase tracking-wider mb-1.5">
-                    Estado Inicial
-                  </label>
+                  <label style={labelStyle}>Estado Inicial</label>
                   <select
+                    style={inputStyle}
                     value={nuevoCliente.estado}
                     onChange={(e) => setNuevoCliente({ ...nuevoCliente, estado: e.target.value })}
-                    className="w-full bg-[#FAF8F5] border border-stone-200/80 rounded-md p-3 text-sm text-stone-900 focus:outline-none focus:border-stone-400 transition-colors"
                   >
                     <option value="En Evaluación">En Evaluación</option>
                     <option value="Activo">Activo</option>
                   </select>
                 </div>
-              </div>
-            </div>
-
-            {/* Sección 2: Antropometría Inicial */}
-            <div className="space-y-4 pt-2">
-              <h3 className="text-xs font-bold text-stone-500 uppercase tracking-wider border-l-2 border-[#FFC800] pl-2">
-                2. Evaluación Antropométrica Inicial
-              </h3>
-
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
                 <div>
-                  <label className="block text-xs font-medium text-stone-600 uppercase tracking-wider mb-1.5">
-                    Peso (kg)
-                  </label>
+                  <label style={labelStyle}>Edad</label>
                   <input
-                    type="number"
-                    value={nuevoCliente.pesoActual}
-                    onChange={(e) => setNuevoCliente({ ...nuevoCliente, pesoActual: e.target.value })}
-                    placeholder="75.0"
-                    className="w-full bg-[#FAF8F5] border border-stone-200/80 rounded-md p-3 text-sm text-stone-900 focus:outline-none focus:border-stone-400 transition-colors"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-medium text-stone-600 uppercase tracking-wider mb-1.5">
-                    Estatura (cm)
-                  </label>
-                  <input
-                    type="number"
-                    value={nuevoCliente.estatura}
-                    onChange={(e) => setNuevoCliente({ ...nuevoCliente, estatura: e.target.value })}
-                    placeholder="175"
-                    className="w-full bg-[#FAF8F5] border border-stone-200/80 rounded-md p-3 text-sm text-stone-900 focus:outline-none focus:border-stone-400 transition-colors"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-medium text-stone-600 uppercase tracking-wider mb-1.5">
-                    % Grasa (Est.)
-                  </label>
-                  <input
-                    type="number"
-                    value={nuevoCliente.porcentajeGrasa}
-                    onChange={(e) => setNuevoCliente({ ...nuevoCliente, porcentajeGrasa: e.target.value })}
-                    placeholder="18"
-                    className="w-full bg-[#FAF8F5] border border-stone-200/80 rounded-md p-3 text-sm text-stone-900 focus:outline-none focus:border-stone-400 transition-colors"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-medium text-stone-600 uppercase tracking-wider mb-1.5">
-                    Edad
-                  </label>
-                  <input
-                    type="number"
+                    type="number" style={inputStyle}
                     value={nuevoCliente.edad}
                     onChange={(e) => setNuevoCliente({ ...nuevoCliente, edad: e.target.value })}
                     placeholder="26"
-                    className="w-full bg-[#FAF8F5] border border-stone-200/80 rounded-md p-3 text-sm text-stone-900 focus:outline-none focus:border-stone-400 transition-colors"
                   />
                 </div>
               </div>
+
+              <div style={{
+                background: "#F5F5F5", borderRadius: "8px", padding: "12px 14px", marginTop: "14px",
+                fontSize: "12px", color: "#555",
+              }}>
+                Peso, estatura, cintura y cadera se registran después, desde el expediente del cliente
+                (sección "Historial de Mediciones"), para poder llevar la evolución en el tiempo.
+              </div>
             </div>
 
-            {/* Sección 3: Objetivos y Observaciones */}
-            <div className="space-y-4 pt-2">
-              <h3 className="text-xs font-bold text-stone-500 uppercase tracking-wider border-l-2 border-[#FFC800] pl-2">
-                3. Objetivos & Restricciones
-              </h3>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <p style={{ fontSize: "12px", fontWeight: "900", color: "#FFC800", textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: "12px" }}>
+                2. Objetivos y Plan
+              </p>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "14px", marginBottom: "14px" }}>
                 <div>
-                  <label className="block text-xs font-medium text-stone-600 uppercase tracking-wider mb-1.5">
-                    Objetivo Principal
-                  </label>
+                  <label style={labelStyle}>Objetivo Principal</label>
                   <select
+                    style={inputStyle}
                     value={nuevoCliente.objetivo}
                     onChange={(e) => setNuevoCliente({ ...nuevoCliente, objetivo: e.target.value })}
-                    className="w-full bg-[#FAF8F5] border border-stone-200/80 rounded-md p-3 text-sm text-stone-900 focus:outline-none focus:border-stone-400 transition-colors"
                   >
                     <option value="Hipertrofia / Masa Muscular">Hipertrofia / Masa Muscular</option>
                     <option value="Pérdida de Grasa">Pérdida de Grasa</option>
@@ -461,15 +584,12 @@ export default function ClientesEntrenador() {
                     <option value="Salud y Movilidad">Salud y Movilidad</option>
                   </select>
                 </div>
-
                 <div>
-                  <label className="block text-xs font-medium text-stone-600 uppercase tracking-wider mb-1.5">
-                    Suscripción / Plan
-                  </label>
+                  <label style={labelStyle}>Suscripción / Plan</label>
                   <select
+                    style={inputStyle}
                     value={nuevoCliente.plan}
                     onChange={(e) => setNuevoCliente({ ...nuevoCliente, plan: e.target.value })}
-                    className="w-full bg-[#FAF8F5] border border-stone-200/80 rounded-md p-3 text-sm text-stone-900 focus:outline-none focus:border-stone-400 transition-colors"
                   >
                     <option value="Personalizado Premium">Personalizado Premium</option>
                     <option value="Acondicionamiento Base">Acondicionamiento Base</option>
@@ -477,93 +597,301 @@ export default function ClientesEntrenador() {
                   </select>
                 </div>
               </div>
-
               <div>
-                <label className="block text-xs font-medium text-stone-600 uppercase tracking-wider mb-1.5">
-                  Observaciones / Lesiones Previas
-                </label>
+                <label style={labelStyle}>Observaciones / Lesiones Previas</label>
                 <textarea
                   rows="3"
+                  style={{ ...inputStyle, resize: "vertical" }}
                   value={nuevoCliente.observaciones}
                   onChange={(e) => setNuevoCliente({ ...nuevoCliente, observaciones: e.target.value })}
-                  placeholder="Detalle cualquier condición física o contraindicación relevante..."
-                  className="w-full bg-[#FAF8F5] border border-stone-200/80 rounded-md p-3 text-sm text-stone-900 focus:outline-none focus:border-stone-400 transition-colors placeholder:text-stone-400"
-                ></textarea>
+                  placeholder="Detalle cualquier condición física relevante..."
+                />
               </div>
             </div>
 
-            {/* Botones de Formulario */}
-            <div className="flex justify-end gap-3 pt-4 border-t border-stone-200">
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: "10px", borderTop: "0.5px solid #E5E5E5", paddingTop: "18px" }}>
               <button
                 type="button"
                 onClick={() => setModoCrear(false)}
-                className="bg-white border border-stone-200 text-stone-600 hover:text-stone-900 font-semibold text-sm px-6 py-3 rounded-md transition cursor-pointer"
+                style={{
+                  background: "#FFF", color: "#555", fontWeight: "700", fontSize: "13px",
+                  padding: "12px 20px", borderRadius: "8px", border: "0.5px solid #E5E5E5", cursor: "pointer",
+                }}
               >
                 Cancelar
               </button>
               <button
                 type="submit"
-                className="bg-stone-900 text-stone-50 font-semibold text-sm px-7 py-3 rounded-md hover:bg-stone-800 transition cursor-pointer"
+                disabled={guardando}
+                style={{
+                  background: "#FFC800", color: "#0B0B0B", fontWeight: "900", fontSize: "13px",
+                  padding: "12px 22px", borderRadius: "8px", border: "none",
+                  cursor: guardando ? "default" : "pointer", opacity: guardando ? 0.6 : 1,
+                }}
               >
-                Guardar Cliente
+                {guardando ? "Guardando..." : "Guardar Cliente"}
               </button>
             </div>
-
           </form>
         </div>
       )}
 
-      {/* MODAL DETALLE DE EXPEDIENTE */}
-      {clienteSeleccionado && (
-        <div className="fixed inset-0 bg-stone-900/40 backdrop-blur-xs flex items-center justify-center p-4 z-50">
-          <div className="bg-white rounded-lg border border-stone-200 p-6 max-w-lg w-full space-y-6 shadow-xl">
-            <div className="flex justify-between items-start border-b border-stone-200 pb-4">
+      {/* Modal Asignar Rutina */}
+      {clienteParaAsignarRutina && (
+        <div style={{
+          position: "fixed", inset: 0, background: "rgba(11,11,11,0.45)",
+          display: "flex", alignItems: "center", justifyContent: "center", padding: "16px", zIndex: 50,
+        }}>
+          <div style={{ ...estiloCard, maxWidth: "420px", width: "100%" }}>
+            <div style={{ borderBottom: "0.5px solid #E5E5E5", paddingBottom: "14px", marginBottom: "16px" }}>
+              <h3 style={{ fontSize: "18px", fontWeight: "900", color: "#0B0B0B", margin: 0 }}>
+                Asignar Rutina
+              </h3>
+              <p style={{ fontSize: "12px", color: "#888", margin: "2px 0 0" }}>
+                {clienteParaAsignarRutina.nombre}
+              </p>
+            </div>
+
+            <form onSubmit={handleConfirmarAsignacion} style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
               <div>
-                <span className="text-xs font-mono font-bold text-stone-400">{clienteSeleccionado.id}</span>
-                <h3 className="text-2xl font-bold text-stone-900">{clienteSeleccionado.nombre}</h3>
-                <p className="text-xs text-stone-500">{clienteSeleccionado.email}</p>
+                <label style={labelStyle}>Rutina</label>
+                <select
+                  style={inputStyle}
+                  value={rutinaSeleccionada}
+                  onChange={(e) => setRutinaSeleccionada(e.target.value)}
+                >
+                  <option value="">Sin Asignar</option>
+                  {rutinas.map((r) => (
+                    <option key={r.docId} value={r.docId}>
+                      {r.nombre} · {r.nivel}
+                    </option>
+                  ))}
+                </select>
+                {rutinas.length === 0 && (
+                  <p style={{ fontSize: "11px", color: "#B8860B", marginTop: "6px" }}>
+                    Aún no tienes rutinas creadas. Ve a "Rutinas" en el menú para crear la primera.
+                  </p>
+                )}
+              </div>
+
+              <div style={{ display: "flex", justifyContent: "flex-end", gap: "10px", marginTop: "4px" }}>
+                <button
+                  type="button"
+                  onClick={() => { setClienteParaAsignarRutina(null); setRutinaSeleccionada(""); }}
+                  style={{
+                    background: "#FFF", color: "#555", fontWeight: "700", fontSize: "13px",
+                    padding: "10px 18px", borderRadius: "8px", border: "0.5px solid #E5E5E5", cursor: "pointer",
+                  }}
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={asignandoRutina}
+                  style={{
+                    background: "#FFC800", color: "#0B0B0B", fontWeight: "900", fontSize: "13px",
+                    padding: "10px 20px", borderRadius: "8px", border: "none",
+                    cursor: asignandoRutina ? "default" : "pointer", opacity: asignandoRutina ? 0.6 : 1,
+                  }}
+                >
+                  {asignandoRutina ? "Guardando..." : "Guardar"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Modal expediente */}
+      {clienteSeleccionado && (
+        <div style={{
+          position: "fixed", inset: 0, background: "rgba(11,11,11,0.45)",
+          display: "flex", alignItems: "center", justifyContent: "center", padding: "16px", zIndex: 50,
+        }}>
+          <div style={{ ...estiloCard, maxWidth: "540px", width: "100%", maxHeight: "90vh", overflowY: "auto" }}>
+            <div style={{
+              display: "flex", justifyContent: "space-between", alignItems: "flex-start",
+              borderBottom: "0.5px solid #E5E5E5", paddingBottom: "16px", marginBottom: "16px",
+            }}>
+              <div>
+                <h3 style={{ fontSize: "20px", fontWeight: "900", color: "#0B0B0B", margin: 0 }}>
+                  {clienteSeleccionado.nombre}
+                </h3>
+                <p style={{ fontSize: "12px", color: "#888", margin: "2px 0 0" }}>{clienteSeleccionado.email}</p>
               </div>
               <button
                 onClick={() => setClienteSeleccionado(null)}
-                className="text-stone-400 hover:text-stone-800 text-xl font-bold cursor-pointer"
+                style={{ background: "none", border: "none", color: "#888", fontSize: "18px", cursor: "pointer" }}
               >
                 ✕
               </button>
             </div>
 
-            <div className="space-y-4 text-sm">
-              <div className="grid grid-cols-2 gap-3 bg-[#FAF8F5] p-4 rounded-md border border-stone-200/80">
-                <div>
-                  <span className="block text-xs font-medium text-stone-500 uppercase">Estado</span>
-                  <span className="font-bold text-stone-900">{clienteSeleccionado.estado}</span>
-                </div>
-                <div>
-                  <span className="block text-xs font-medium text-stone-500 uppercase">Teléfono</span>
-                  <span className="font-bold text-stone-900">{clienteSeleccionado.telefono}</span>
-                </div>
-                <div>
-                  <span className="block text-xs font-medium text-stone-500 uppercase">Peso Registrado</span>
-                  <span className="font-bold text-stone-900">{clienteSeleccionado.pesoActual}</span>
-                </div>
-                <div>
-                  <span className="block text-xs font-medium text-stone-500 uppercase">Rutina Vigente</span>
-                  <span className="font-bold text-stone-900">{clienteSeleccionado.rutinaAsignada}</span>
-                </div>
+            <div style={{
+              display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px",
+              background: "#F5F5F5", borderRadius: "10px", padding: "16px", marginBottom: "16px", fontSize: "13px",
+            }}>
+              <div>
+                <p style={{ ...labelStyle, marginBottom: "2px" }}>Estado</p>
+                <p style={{ fontWeight: "700", color: "#0B0B0B", margin: 0 }}>{clienteSeleccionado.estado}</p>
+              </div>
+              <div>
+                <p style={{ ...labelStyle, marginBottom: "2px" }}>Teléfono</p>
+                <p style={{ fontWeight: "700", color: "#0B0B0B", margin: 0 }}>{clienteSeleccionado.telefono}</p>
+              </div>
+              <div>
+                <p style={{ ...labelStyle, marginBottom: "2px" }}>Peso Registrado</p>
+                <p style={{ fontWeight: "700", color: "#0B0B0B", margin: 0 }}>{clienteSeleccionado.pesoActual}</p>
+              </div>
+              <div>
+                <p style={{ ...labelStyle, marginBottom: "2px" }}>Rutina Vigente</p>
+                <p style={{ fontWeight: "700", color: "#0B0B0B", margin: 0 }}>{clienteSeleccionado.rutinaAsignada}</p>
               </div>
             </div>
 
-            <div className="flex justify-end pt-2">
+            {/* Historial de mediciones (ficha antropométrica) */}
+            <div style={{ marginBottom: "16px" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px" }}>
+                <p style={{ fontSize: "13px", fontWeight: "900", color: "#0B0B0B", margin: 0 }}>
+                  Historial de Mediciones
+                </p>
+                <button
+                  onClick={() => setMostrarFormMedicion(!mostrarFormMedicion)}
+                  style={{
+                    background: mostrarFormMedicion ? "#F5F5F5" : "#FFC800",
+                    color: "#0B0B0B", fontWeight: "700", fontSize: "11px",
+                    padding: "6px 12px", borderRadius: "8px",
+                    border: mostrarFormMedicion ? "0.5px solid #E5E5E5" : "none", cursor: "pointer",
+                  }}
+                >
+                  {mostrarFormMedicion ? "Cancelar" : "Nueva Medición"}
+                </button>
+              </div>
+
+              {mostrarFormMedicion && (
+                <form
+                  onSubmit={handleGuardarMedicion}
+                  style={{
+                    background: "#F5F5F5", borderRadius: "10px", padding: "14px",
+                    marginBottom: "12px", display: "flex", flexDirection: "column", gap: "10px",
+                  }}
+                >
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
+                    <div>
+                      <label style={labelStyle}>Fecha</label>
+                      <input
+                        type="date" required style={{ ...inputStyle, background: "#FFF" }}
+                        value={nuevaMedicion.fecha}
+                        onChange={(e) => setNuevaMedicion({ ...nuevaMedicion, fecha: e.target.value })}
+                      />
+                    </div>
+                    <div>
+                      <label style={labelStyle}>Peso (kg) *</label>
+                      <input
+                        type="number" step="0.1" required style={{ ...inputStyle, background: "#FFF" }}
+                        value={nuevaMedicion.peso}
+                        onChange={(e) => setNuevaMedicion({ ...nuevaMedicion, peso: e.target.value })}
+                        placeholder="75.0"
+                      />
+                    </div>
+                    <div>
+                      <label style={labelStyle}>Estatura (cm) *</label>
+                      <input
+                        type="number" required style={{ ...inputStyle, background: "#FFF" }}
+                        value={nuevaMedicion.estatura}
+                        onChange={(e) => setNuevaMedicion({ ...nuevaMedicion, estatura: e.target.value })}
+                        placeholder="175"
+                      />
+                    </div>
+                    <div>
+                      <label style={labelStyle}>Cintura (cm)</label>
+                      <input
+                        type="number" step="0.1" style={{ ...inputStyle, background: "#FFF" }}
+                        value={nuevaMedicion.cintura}
+                        onChange={(e) => setNuevaMedicion({ ...nuevaMedicion, cintura: e.target.value })}
+                        placeholder="82"
+                      />
+                    </div>
+                    <div>
+                      <label style={labelStyle}>Cadera (cm)</label>
+                      <input
+                        type="number" step="0.1" style={{ ...inputStyle, background: "#FFF" }}
+                        value={nuevaMedicion.cadera}
+                        onChange={(e) => setNuevaMedicion({ ...nuevaMedicion, cadera: e.target.value })}
+                        placeholder="98"
+                      />
+                    </div>
+                  </div>
+                  <button
+                    type="submit"
+                    disabled={guardandoMedicion}
+                    style={{
+                      background: "#0B0B0B", color: "#FFF", fontWeight: "700", fontSize: "12px",
+                      padding: "10px", borderRadius: "8px", border: "none",
+                      cursor: guardandoMedicion ? "default" : "pointer", opacity: guardandoMedicion ? 0.6 : 1,
+                    }}
+                  >
+                    {guardandoMedicion ? "Guardando..." : "Guardar Medición"}
+                  </button>
+                </form>
+              )}
+
+              {cargandoMediciones ? (
+                <p style={{ fontSize: "12px", color: "#888" }}>Cargando historial...</p>
+              ) : mediciones.length === 0 ? (
+                <p style={{ fontSize: "12px", color: "#888" }}>Aún no hay mediciones registradas.</p>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: "8px", maxHeight: "220px", overflowY: "auto" }}>
+                  {mediciones.map((m) => {
+                    const clasif = clasificarIMC(m.imc);
+                    return (
+                      <div key={m.docId} style={{
+                        background: "#F5F5F5", borderRadius: "8px", padding: "10px 12px",
+                        display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "12px", flexWrap: "wrap", gap: "6px",
+                      }}>
+                        <span style={{ fontWeight: "700", color: "#0B0B0B" }}>{m.fecha}</span>
+                        <span style={{ color: "#555" }}>Peso: <strong style={{ color: "#0B0B0B" }}>{m.peso} kg</strong></span>
+                        {m.icc && (
+                          <span style={{ color: "#555" }}>ICC: <strong style={{ color: "#0B0B0B" }}>{m.icc}</strong></span>
+                        )}
+                        <span style={{
+                          fontSize: "10px", fontWeight: "700", padding: "3px 8px", borderRadius: "20px",
+                          background: clasif.bg, color: clasif.color,
+                        }}>
+                          IMC {m.imc} · {clasif.label}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <button
+                onClick={() =>
+                  handleCambiarEstado(clienteSeleccionado, clienteSeleccionado.estado === "Activo" ? "Inactivo" : "Activo")
+                }
+                style={{
+                  background: "#F5F5F5", color: "#0B0B0B", fontWeight: "700", fontSize: "12px",
+                  padding: "10px 16px", borderRadius: "8px", border: "0.5px solid #E5E5E5", cursor: "pointer",
+                }}
+              >
+                {clienteSeleccionado.estado === "Activo" ? "Marcar Inactivo" : "Marcar Activo"}
+              </button>
               <button
                 onClick={() => setClienteSeleccionado(null)}
-                className="bg-stone-900 text-white font-semibold text-xs px-5 py-2.5 rounded-md hover:bg-stone-800 transition cursor-pointer"
+                style={{
+                  background: "#0B0B0B", color: "#FFF", fontWeight: "700", fontSize: "12px",
+                  padding: "10px 18px", borderRadius: "8px", border: "none", cursor: "pointer",
+                }}
               >
-                Cerrar Expediente
+                Cerrar
               </button>
             </div>
           </div>
         </div>
       )}
-
     </div>
   );
 }

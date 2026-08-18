@@ -15,14 +15,10 @@ export default function DashboardAdmin({ seccion, setSeccion }) {
   const [formCliente, setFormCliente] = useState({ nombre: "", apellido: "", email: "", telefono: "", coachId: "" });
   const [errorForm, setErrorForm] = useState("");
 
-  // ✅ Antes estaban declarados DENTRO de "if (seccion === 'Solicitudes')",
-  // lo cual violaba las Reglas de los Hooks. Ahora están aquí arriba,
-  // junto con todos los demás hooks, sin ninguna condición.
+
   const [busquedaSol, setBusquedaSol] = useState("");
   const [seleccionados, setSeleccionados] = useState([]);
 
-  // ✅ Esta variable se usaba en la sección "Entrenadores" pero nunca
-  // había sido declarada con useState (hubiera lanzado ReferenceError).
   const [busquedaEnt, setBusquedaEnt] = useState("");
 
   const cargarCoaches = async () => {
@@ -82,7 +78,7 @@ export default function DashboardAdmin({ seccion, setSeccion }) {
     return;
   }
 
-  // Verificar correo duplicado solo al crear, no al editar
+  // Verificar correo duplicado solo al crear
   if (!clienteSeleccionado) {
     const q = query(collection(db, "clientes"), where("email", "==", formCliente.email));
     const snap = await getDocs(q);
