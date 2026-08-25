@@ -15,11 +15,20 @@ export default function DashboardAdmin({ seccion, setSeccion }) {
   const [formCliente, setFormCliente] = useState({ nombre: "", apellido: "", email: "", telefono: "", coachId: "" });
   const [errorForm, setErrorForm] = useState("");
 
-
+  // ✅ Antes estaban declarados DENTRO de "if (seccion === 'Solicitudes')",
+  // lo cual violaba las Reglas de los Hooks. Ahora están aquí arriba,
+  // junto con todos los demás hooks, sin ninguna condición.
   const [busquedaSol, setBusquedaSol] = useState("");
   const [seleccionados, setSeleccionados] = useState([]);
 
+  // ✅ Esta variable se usaba en la sección "Entrenadores" pero nunca
+  // había sido declarada con useState (hubiera lanzado ReferenceError).
   const [busquedaEnt, setBusquedaEnt] = useState("");
+
+  // --- Historial de mediciones (ficha antropométrica) para el modal de Clientes ---
+  const [clienteHistorial, setClienteHistorial] = useState(null);
+  const [medicionesHistorial, setMedicionesHistorial] = useState([]);
+  const [cargandoHistorial, setCargandoHistorial] = useState(false);
 
   const cargarCoaches = async () => {
     const snap = await getDocs(query(collection(db, "usuarios"), where("rol", "==", "coach")));
@@ -78,7 +87,7 @@ export default function DashboardAdmin({ seccion, setSeccion }) {
     return;
   }
 
-  // Verificar correo duplicado solo al crear
+  // Verificar correo duplicado solo al crear, no al editar
   if (!clienteSeleccionado) {
     const q = query(collection(db, "clientes"), where("email", "==", formCliente.email));
     const snap = await getDocs(q);
@@ -107,6 +116,37 @@ export default function DashboardAdmin({ seccion, setSeccion }) {
   const cambiarEstadoCliente = async (clienteId, nuevoEstado) => {
     await updateDoc(doc(db, "clientes", clienteId), { estado: nuevoEstado });
     cargarClientes();
+  };
+
+  // --- Ver historial antropométrico de un cliente (solo lectura) ---
+  const abrirHistorial = async (cliente) => {
+    setClienteHistorial(cliente);
+    setCargandoHistorial(true);
+    try {
+      const q = query(collection(db, "mediciones"), where("clienteId", "==", cliente.id));
+      const snap = await getDocs(q);
+      const lista = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      lista.sort((a, b) => (b.fecha || "").localeCompare(a.fecha || ""));
+      setMedicionesHistorial(lista);
+    } catch (e) {
+      console.error("Error cargando historial de mediciones:", e);
+      setMedicionesHistorial([]);
+    } finally {
+      setCargandoHistorial(false);
+    }
+  };
+
+  const cerrarHistorial = () => {
+    setClienteHistorial(null);
+    setMedicionesHistorial([]);
+  };
+
+  const clasificarIMC = (imc) => {
+    if (imc == null) return { label: "--", bg: "#F5F5F5", color: "#888" };
+    if (imc < 18.5) return { label: "Bajo peso", bg: "#EAF2FB", color: "#2E5D9A" };
+    if (imc < 25) return { label: "Normal", bg: "#E1F5EE", color: "#085041" };
+    if (imc < 30) return { label: "Sobrepeso", bg: "#FFF8E1", color: "#B8860B" };
+    return { label: "Obesidad", bg: "#FDECEC", color: "#B02A2A" };
   };
 
   if (cargando) return (
@@ -309,6 +349,97 @@ export default function DashboardAdmin({ seccion, setSeccion }) {
     </div>
   </div>
 );
+
+  // --- Modal de solo lectura: historial de mediciones (ficha antropométrica) ---
+  const ModalHistorial = () => {
+    if (!clienteHistorial) return null;
+    return (
+      <div style={{
+        position: "fixed", inset: 0, background: "rgba(11,11,11,0.45)",
+        display: "flex", alignItems: "center", justifyContent: "center", padding: "16px", zIndex: 50,
+      }}>
+        <div style={{ ...estiloCard, maxWidth: "520px", width: "100%", maxHeight: "85vh", overflowY: "auto" }}>
+          <div style={{
+            display: "flex", justifyContent: "space-between", alignItems: "flex-start",
+            borderBottom: "0.5px solid #E5E5E5", paddingBottom: "16px", marginBottom: "16px",
+          }}>
+            <div>
+              <h3 style={{ fontSize: "18px", fontWeight: "900", color: "#0B0B0B", margin: 0 }}>
+                {clienteHistorial.nombre} {clienteHistorial.apellido}
+              </h3>
+              <p style={{ fontSize: "12px", color: "#888", margin: "2px 0 0" }}>
+                Historial de mediciones antropométricas
+              </p>
+            </div>
+            <button
+              onClick={cerrarHistorial}
+              style={{ background: "none", border: "none", color: "#888", fontSize: "18px", cursor: "pointer" }}
+            >
+              ✕
+            </button>
+          </div>
+
+          {cargandoHistorial ? (
+            <p style={{ fontSize: "13px", color: "#888" }}>Cargando historial...</p>
+          ) : medicionesHistorial.length === 0 ? (
+            <div style={{ background: "#F5F5F5", borderRadius: "10px", padding: "24px", textAlign: "center" }}>
+              <p style={{ color: "#888", fontSize: "13px", margin: 0 }}>
+                Este cliente aún no tiene mediciones registradas por su entrenador.
+              </p>
+            </div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+              {medicionesHistorial.map((m) => {
+                const clasif = clasificarIMC(m.imc);
+                return (
+                  <div key={m.id} style={{ background: "#F5F5F5", borderRadius: "10px", padding: "14px 16px" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
+                      <span style={{ fontWeight: "900", fontSize: "13px", color: "#0B0B0B" }}>{m.fecha}</span>
+                      <span style={{
+                        fontSize: "10px", fontWeight: "700", padding: "3px 10px", borderRadius: "20px",
+                        background: clasif.bg, color: clasif.color,
+                      }}>
+                        IMC {m.imc ?? "--"} · {clasif.label}
+                      </span>
+                    </div>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "8px", fontSize: "12px", color: "#555" }}>
+                      <div>
+                        <p style={{ margin: "0 0 2px", color: "#888", fontSize: "10px", textTransform: "uppercase" }}>Peso</p>
+                        <p style={{ margin: 0, fontWeight: "700", color: "#0B0B0B" }}>{m.peso} kg</p>
+                      </div>
+                      <div>
+                        <p style={{ margin: "0 0 2px", color: "#888", fontSize: "10px", textTransform: "uppercase" }}>Estatura</p>
+                        <p style={{ margin: 0, fontWeight: "700", color: "#0B0B0B" }}>{m.estatura} cm</p>
+                      </div>
+                      <div>
+                        <p style={{ margin: "0 0 2px", color: "#888", fontSize: "10px", textTransform: "uppercase" }}>Cintura</p>
+                        <p style={{ margin: 0, fontWeight: "700", color: "#0B0B0B" }}>{m.cintura ? `${m.cintura} cm` : "--"}</p>
+                      </div>
+                      <div>
+                        <p style={{ margin: "0 0 2px", color: "#888", fontSize: "10px", textTransform: "uppercase" }}>Cadera</p>
+                        <p style={{ margin: 0, fontWeight: "700", color: "#0B0B0B" }}>{m.cadera ? `${m.cadera} cm` : "--"}</p>
+                      </div>
+                    </div>
+                    {m.icc && (
+                      <p style={{ margin: "8px 0 0", fontSize: "12px", color: "#555" }}>
+                        Índice Cintura-Cadera: <strong style={{ color: "#0B0B0B" }}>{m.icc}</strong>
+                      </p>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "16px" }}>
+            <button onClick={cerrarHistorial} style={estiloBoton("#0B0B0B", "#FFF")}>
+              Cerrar
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  };
 
   // ===== INICIO =====
   if (seccion === "Inicio") {
@@ -768,6 +899,9 @@ export default function DashboardAdmin({ seccion, setSeccion }) {
                   }}>
                     {c.estado?.toUpperCase()}
                   </span>
+                  <button onClick={() => abrirHistorial(c)} style={estiloBoton("#F5F5F5", "#378ADD")}>
+                    Ver Historial
+                  </button>
                   <button onClick={() => {
                     setClienteSeleccionado(c);
                     setFormCliente({ nombre: c.nombre, apellido: c.apellido, email: c.email, telefono: c.telefono || "", coachId: c.coachId || "" });
@@ -785,6 +919,8 @@ export default function DashboardAdmin({ seccion, setSeccion }) {
           })}
         </div>
       )}
+
+      <ModalHistorial />
     </div>
   );
 

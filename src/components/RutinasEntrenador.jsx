@@ -1,610 +1,375 @@
-import { useState, useEffect } from "react";
-import {
-  collection,
-  query,
-  where,
-  onSnapshot,
-  addDoc,
-  updateDoc,
-  deleteDoc,
-  doc,
-  serverTimestamp,
-} from "firebase/firestore";
-// AJUSTA esta ruta si tu firebase.js está en otro lugar
+import { useEffect, useState } from "react";
+import FullCalendar from "@fullcalendar/react";
+import dayGridPlugin from "@fullcalendar/daygrid";
+import interactionPlugin from "@fullcalendar/interaction";
+import esLocale from "@fullcalendar/core/locales/es";
 import { db, auth } from "../firebase";
+import { collection, addDoc, query, where, getDocs } from "firebase/firestore";
 
-// --- Mismo lenguaje de diseño que InicioEntrenador.jsx / ClientesEntrenador.jsx ---
-const estiloCard = {
-  background: "#FFFFFF",
-  border: "0.5px solid #E5E5E5",
-  borderRadius: "12px",
-  padding: "20px 24px",
-};
+export default function Calendario() {
+  const [eventos, setEventos] = useState([]);
+  const [eventosDia, setEventosDia] = useState([]);
+  const [diaSeleccionado, setDiaSeleccionado] = useState(null);
+  const [mostrarForm, setMostrarForm] = useState(false);
+  const [nuevoEvento, setNuevoEvento] = useState({ titulo: "", fecha: "", hora: "", descripcion: "" });
+  const [error, setError] = useState("");
+  const [cargando, setCargando] = useState(false);
+  const [mostrarSelectorHora, setMostrarSelectorHora] = useState(false);
 
-const inputStyle = {
-  width: "100%",
-  background: "#F5F5F5",
-  border: "0.5px solid #E5E5E5",
-  borderRadius: "8px",
-  padding: "10px 12px",
-  fontSize: "13px",
-  color: "#0B0B0B",
-  outline: "none",
-  boxSizing: "border-box",
-};
+  // Franja horaria típica de un gimnasio: 6:00am a 9:00pm cada 30 minutos
+  const horasComunes = [];
+  for (let h = 6; h <= 21; h++) {
+    horasComunes.push(`${String(h).padStart(2, "0")}:00`);
+    if (h !== 21) horasComunes.push(`${String(h).padStart(2, "0")}:30`);
+  }
 
-const labelStyle = {
-  fontSize: "11px",
-  fontWeight: "700",
-  color: "#888",
-  textTransform: "uppercase",
-  letterSpacing: "0.03em",
-  marginBottom: "6px",
-  display: "block",
-};
+  const formatearHora12 = (hora24) => {
+    if (!hora24) return "Seleccionar hora";
+    const [h, m] = hora24.split(":").map(Number);
+    const periodo = h >= 12 ? "PM" : "AM";
+    const h12 = h % 12 === 0 ? 12 : h % 12;
+    return `${h12}:${String(m).padStart(2, "0")} ${periodo}`;
+  };
 
-const OBJETIVOS = ["Todos", "Masa Muscular", "Fuerza", "Salud / Movilidad", "Pérdida de Grasa"];
-const NIVELES = ["Principiante", "Intermedio", "Avanzado"];
+  const token = localStorage.getItem("googleCalendarToken");
+  const coachId = auth.currentUser?.uid;
 
-export default function RutinasEntrenador({ usuario }) {
-  const coachId = usuario?.uid || auth.currentUser?.uid;
+  // --- Fecha LOCAL correcta (evita el desfase de toISOString() en UTC-4) ---
+  const fechaLocalDe = (valor) => {
+    if (!valor) return null;
+    // Eventos de todo el día de Google ya vienen como "YYYY-MM-DD": no hay que convertir
+    if (/^\d{4}-\d{2}-\d{2}$/.test(valor)) return valor;
+    const d = new Date(valor);
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    return `${y}-${m}-${day}`;
+  };
 
-  const [modoCrear, setModoCrear] = useState(false);
-  const [rutinaEditando, setRutinaEditando] = useState(null); // docId si estamos editando
-  const [filtroObjetivo, setFiltroObjetivo] = useState("Todos");
-  const [busqueda, setBusqueda] = useState("");
-  const [error, setError] = useState(null);
-  const [guardando, setGuardando] = useState(false);
+  const cargarEventos = async () => {
+    try {
+      // Cargar desde Firestore
+      const q = query(collection(db, "eventos"), where("coachId", "==", coachId));
+      const snap = await getDocs(q);
+      const eventosFirestore = snap.docs.map(d => ({
+        id: d.id,
+        title: d.data().titulo,
+        start: d.data().inicio,
+        end: d.data().fin,
+        fecha: d.data().fecha, // fecha local elegida por el coach al crearlo (fuente de verdad)
+        description: d.data().descripcion || "",
+        fuente: "firestore"
+      }));
 
-  const [rutinas, setRutinas] = useState([]);
-  const [clientes, setClientes] = useState([]);
-  const [cargando, setCargando] = useState(true);
+      // Cargar desde Google Calendar si hay token
+      if (token) {
+        try {
+          const res = await fetch(
+            `https://www.googleapis.com/calendar/v3/calendars/primary/events?maxResults=100&singleEvents=true&orderBy=startTime`,
+            { headers: { Authorization: `Bearer ${token}` } }
+          );
+          const data = await res.json();
+          if (!data.error) {
+            const eventosGoogle = (data.items || []).map(e => ({
+              id: e.id,
+              title: e.summary || "Sin título",
+              start: e.start?.dateTime || e.start?.date,
+              end: e.end?.dateTime || e.end?.date,
+              description: e.description || "",
+              fuente: "google"
+            }));
+            // Combinar ambas fuentes evitando duplicados
+            const idsFirestore = new Set(eventosFirestore.map(e => e.title + e.start));
+            const eventosUnicos = [
+              ...eventosFirestore,
+              ...eventosGoogle.filter(e => !idsFirestore.has(e.title + e.start))
+            ];
+            setEventos(eventosUnicos);
+            return;
+          }
+        } catch { }
+      }
+      setEventos(eventosFirestore);
+    } catch (e) {
+      setError("Error al cargar eventos.");
+    }
+  };
 
-  const [form, setForm] = useState({
-    nombre: "",
-    nivel: "Intermedio",
-    objetivo: "Hipertrofia / Masa Muscular",
-    diasSemana: 4,
-  });
-
-  const [ejerciciosBorrador, setEjerciciosBorrador] = useState([]);
-
-  // Panel de asignación directa
-  const [rutinaParaAsignar, setRutinaParaAsignar] = useState(null);
-  const [clienteDestino, setClienteDestino] = useState("");
-  const [notaAsignacion, setNotaAsignacion] = useState("");
-
-  // --- Rutinas del coach en tiempo real ---
-  useEffect(() => {
-    if (!coachId) {
-      setCargando(false);
-      setError("No se detectó una sesión activa.");
+  const crearEvento = async () => {
+    if (!nuevoEvento.titulo.trim() || !nuevoEvento.fecha || !nuevoEvento.hora) {
+      setError("Completa título, fecha y hora.");
       return;
     }
-    const q = query(collection(db, "rutinas"), where("coachId", "==", coachId));
-    const unsub = onSnapshot(
-      q,
-      (snap) => {
-        const lista = snap.docs.map((d) => ({ docId: d.id, ...d.data() }));
-        lista.sort((a, b) => (a.nombre || "").localeCompare(b.nombre || ""));
-        setRutinas(lista);
-        setCargando(false);
-      },
-      (err) => {
-        console.error("Error leyendo rutinas:", err);
-        setError("No se pudieron cargar las rutinas. Verifica las reglas de Firestore.");
-        setCargando(false);
-      }
-    );
-    return () => unsub();
-  }, [coachId]);
+    setError("");
+    setCargando(true);
+    const inicio = new Date(`${nuevoEvento.fecha}T${nuevoEvento.hora}:00`);
+    const fin = new Date(inicio.getTime() + 60 * 60 * 1000);
 
-  // --- Clientes del coach, para el selector de asignación directa ---
-  useEffect(() => {
-    if (!coachId) return;
-    const q = query(collection(db, "clientes"), where("coachId", "==", coachId));
-    const unsub = onSnapshot(q, (snap) => {
-      setClientes(
-        snap.docs.map((d) => {
-          const data = d.data();
-          return { docId: d.id, nombre: `${data.nombre || ""} ${data.apellido || ""}`.trim() };
-        })
-      );
-    });
-    return () => unsub();
-  }, [coachId]);
-
-  const resetForm = () => {
-    setForm({ nombre: "", nivel: "Intermedio", objetivo: "Hipertrofia / Masa Muscular", diasSemana: 4 });
-    setEjerciciosBorrador([]);
-    setRutinaEditando(null);
-  };
-
-  const abrirCrear = () => {
-    resetForm();
-    setModoCrear(true);
-  };
-
-  const abrirEditar = (rutina) => {
-    setForm({
-      nombre: rutina.nombre || "",
-      nivel: rutina.nivel || "Intermedio",
-      objetivo: rutina.objetivo || "Hipertrofia / Masa Muscular",
-      diasSemana: rutina.diasSemana || 4,
-    });
-    setEjerciciosBorrador(rutina.ejercicios || []);
-    setRutinaEditando(rutina.docId);
-    setModoCrear(true);
-  };
-
-  const agregarEjercicio = () => {
-    setEjerciciosBorrador([
-      ...ejerciciosBorrador,
-      { id: Date.now(), nombre: "Nuevo Ejercicio", grupo: "General", series: "3", reps: "10-12", descanso: "60s" },
-    ]);
-  };
-
-  const actualizarEjercicio = (id, campo, valor) => {
-    setEjerciciosBorrador(ejerciciosBorrador.map((ej) => (ej.id === id ? { ...ej, [campo]: valor } : ej)));
-  };
-
-  const eliminarEjercicio = (id) => {
-    setEjerciciosBorrador(ejerciciosBorrador.filter((ej) => ej.id !== id));
-  };
-
-  const handleGuardarRutina = async (e) => {
-    e.preventDefault();
-    if (!form.nombre || !coachId) return;
-
-    setGuardando(true);
     try {
-      const payload = {
-        nombre: form.nombre,
-        nivel: form.nivel,
-        objetivo: form.objetivo,
-        diasSemana: Number(form.diasSemana) || 0,
-        ejercicios: ejerciciosBorrador,
-        ejerciciosTotales: ejerciciosBorrador.length,
+      // Guardar en Firestore siempre
+      await addDoc(collection(db, "eventos"), {
+        titulo: nuevoEvento.titulo.trim(),
+        descripcion: nuevoEvento.descripcion.trim(),
+        inicio: inicio.toISOString(),
+        fin: fin.toISOString(),
+        fecha: nuevoEvento.fecha,
         coachId,
-        actualizadoEn: serverTimestamp(),
-      };
+        creadoEn: new Date(),
+      });
 
-      if (rutinaEditando) {
-        await updateDoc(doc(db, "rutinas", rutinaEditando), payload);
-      } else {
-        await addDoc(collection(db, "rutinas"), { ...payload, creadoEn: serverTimestamp() });
+      // Intentar guardar en Google Calendar si hay token
+      if (token) {
+        try {
+          await fetch("https://www.googleapis.com/calendar/v3/calendars/primary/events", {
+            method: "POST",
+            headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+            body: JSON.stringify({
+              summary: nuevoEvento.titulo,
+              description: nuevoEvento.descripcion,
+              start: { dateTime: inicio.toISOString(), timeZone: "America/Santo_Domingo" },
+              end: { dateTime: fin.toISOString(), timeZone: "America/Santo_Domingo" },
+            }),
+          });
+        } catch { }
       }
 
-      resetForm();
-      setModoCrear(false);
-    } catch (err) {
-      console.error("Error al guardar rutina:", err);
-      setError("No se pudo guardar la rutina. Intenta de nuevo.");
-    } finally {
-      setGuardando(false);
+      setMostrarForm(false);
+      setNuevoEvento({ titulo: "", fecha: "", hora: "", descripcion: "" });
+      setError("");
+      cargarEventos();
+    } catch (e) {
+      setError("Error al crear el evento.");
     }
+    setCargando(false);
   };
 
-  const handleEliminarRutina = async (rutina) => {
-    if (!window.confirm(`¿Eliminar la rutina "${rutina.nombre}"? Esta acción no se puede deshacer.`)) return;
-    try {
-      await deleteDoc(doc(db, "rutinas", rutina.docId));
-    } catch (err) {
-      console.error("Error al eliminar rutina:", err);
-      setError("No se pudo eliminar la rutina.");
-    }
+  const handleDiaClick = (info) => {
+    const fecha = info.dateStr; // ya viene en fecha local desde FullCalendar
+    setDiaSeleccionado(fecha);
+    const delDia = eventos.filter((e) => (e.fecha || fechaLocalDe(e.start)) === fecha);
+    setEventosDia(delDia);
   };
 
-  // --- Asignación directa: actualiza el cliente (denormalizado, sin JOIN) ---
-  const handleAsignar = async (e) => {
-    e.preventDefault();
-    if (!clienteDestino || !rutinaParaAsignar) return;
-    try {
-      await updateDoc(doc(db, "clientes", clienteDestino), {
-        rutinaAsignada: rutinaParaAsignar.nombre,
-        rutinaId: rutinaParaAsignar.docId,
-        notaRutina: notaAsignacion || "",
-      });
-      setRutinaParaAsignar(null);
-      setClienteDestino("");
-      setNotaAsignacion("");
-    } catch (err) {
-      console.error("Error al asignar rutina:", err);
-      setError("No se pudo asignar la rutina al cliente.");
-    }
+  useEffect(() => { cargarEventos(); }, []);
+
+  const estiloInput = {
+    width: "100%", border: "0.5px solid #E5E5E5", borderRadius: "8px",
+    padding: "12px", fontSize: "14px", marginBottom: "10px",
+    outline: "none", display: "block", background: "#FAFAFA"
   };
-
-  const rutinasFiltradas = rutinas.filter((r) => {
-    const cumpleFiltro = filtroObjetivo === "Todos" || r.objetivo === filtroObjetivo;
-    const cumpleBusqueda = (r.nombre || "").toLowerCase().includes(busqueda.toLowerCase());
-    return cumpleFiltro && cumpleBusqueda;
-  });
-
-  if (cargando) {
-    return (
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "200px" }}>
-        <p style={{ color: "#888" }}>Cargando...</p>
-      </div>
-    );
-  }
 
   return (
     <div>
-      {/* Encabezado */}
-      <div style={{ marginBottom: "28px", display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: "16px" }}>
+      {/* Header */}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "24px" }}>
         <div>
-          <p style={{ fontSize: "13px", color: "#888", margin: "0 0 4px" }}>
-            {modoCrear ? "Módulo de rutinas" : "Prescripción de entrenamiento"}
-          </p>
-          <h2 style={{ fontSize: "26px", fontWeight: "900", color: "#0B0B0B", margin: 0 }}>
-            {modoCrear ? (rutinaEditando ? "Editar Rutina" : "Diseñador de Rutinas") : "Biblioteca de Rutinas"}
-          </h2>
-          <p style={{ fontSize: "14px", color: "#888", marginTop: "6px" }}>
-            {modoCrear
-              ? "Estructura los días de entrenamiento y define los ejercicios prescritos."
-              : "Gestiona, edita y asigna programas de entrenamiento a tus clientes."}
+          <h3 style={{ fontSize: "20px", fontWeight: "900", color: "#0B0B0B", margin: 0 }}>Mi Calendario</h3>
+          <p style={{ fontSize: "13px", color: "#888", margin: "4px 0 0" }}>
+            {token ? "Sincronizado con Google Calendar" : "Calendario local — inicia sesión con Google para sincronizar"}
           </p>
         </div>
-
-        <button
-          onClick={() => (modoCrear ? (resetForm(), setModoCrear(false)) : abrirCrear())}
-          style={{
-            background: "#FFC800", color: "#0B0B0B", fontWeight: "900",
-            fontSize: "13px", padding: "12px 20px", borderRadius: "10px",
-            border: "none", cursor: "pointer", flexShrink: 0,
-          }}
-        >
-          {modoCrear ? "Volver" : "Crear Nueva Rutina"}
+        <button onClick={() => setMostrarForm(!mostrarForm)} style={{
+          background: "#FFC800", color: "#0B0B0B", fontWeight: "700",
+          fontSize: "14px", padding: "10px 18px", borderRadius: "8px",
+          border: "none", cursor: "pointer"
+        }}>
+          + Nuevo evento
         </button>
       </div>
 
       {error && (
-        <div style={{
-          background: "#FDECEC", border: "0.5px solid #F3C4C4", color: "#B02A2A",
-          borderRadius: "10px", padding: "12px 16px", fontSize: "13px", marginBottom: "20px",
-        }}>
-          {error}
+        <div style={{ background: "#FFF0F0", border: "0.5px solid #FFCCCC", borderRadius: "8px", padding: "12px 16px", marginBottom: "16px" }}>
+          <p style={{ color: "#CC0000", fontSize: "13px", margin: 0 }}>{error}</p>
         </div>
       )}
 
-      {!modoCrear ? (
-        <>
-          {/* Filtros y búsqueda */}
-          <div style={{
-            ...estiloCard, marginBottom: "20px", padding: "16px 20px",
-            display: "flex", flexWrap: "wrap", justifyContent: "space-between", alignItems: "center", gap: "12px",
-          }}>
-            <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
-              {OBJETIVOS.map((o) => (
-                <button
-                  key={o}
-                  onClick={() => setFiltroObjetivo(o)}
-                  style={{
-                    fontSize: "12px", fontWeight: "700", padding: "8px 14px",
-                    borderRadius: "8px", border: "none", cursor: "pointer",
-                    background: filtroObjetivo === o ? "#FFC800" : "#F5F5F5",
-                    color: "#0B0B0B",
-                  }}
-                >
-                  {o}
-                </button>
-              ))}
-            </div>
-            <input
-              type="text"
-              value={busqueda}
-              onChange={(e) => setBusqueda(e.target.value)}
-              placeholder="Buscar por nombre..."
-              style={{ ...inputStyle, width: "240px" }}
-            />
-          </div>
+      {/* Formulario */}
+      {mostrarForm && (
+        <div style={{ background: "#FFFFFF", border: "0.5px solid #E5E5E5", borderRadius: "12px", padding: "24px", marginBottom: "20px" }}>
+          <h4 style={{ fontSize: "15px", fontWeight: "900", color: "#0B0B0B", marginBottom: "16px" }}>Crear nuevo evento</h4>
+          <input placeholder="Título del evento *" value={nuevoEvento.titulo}
+            onChange={e => setNuevoEvento({ ...nuevoEvento, titulo: e.target.value })}
+            style={estiloInput} />
+          <div style={{ display: "flex", gap: "10px" }}>
+            <input type="date" value={nuevoEvento.fecha}
+              onChange={e => setNuevoEvento({ ...nuevoEvento, fecha: e.target.value })}
+              style={{ ...estiloInput, flex: 1 }} />
+            <div style={{ flex: 1, position: "relative" }}>
+              <button
+                type="button"
+                onClick={() => setMostrarSelectorHora(!mostrarSelectorHora)}
+                style={{
+                  ...estiloInput, textAlign: "left", cursor: "pointer",
+                  display: "flex", justifyContent: "space-between", alignItems: "center",
+                  color: nuevoEvento.hora ? "#0B0B0B" : "#888",
+                }}
+              >
+                {formatearHora12(nuevoEvento.hora)}
+                <span style={{ color: "#888", fontSize: "12px" }}>{mostrarSelectorHora ? "▲" : "▼"}</span>
+              </button>
 
-          {/* Grid de rutinas */}
-          {rutinasFiltradas.length === 0 ? (
-            <div style={{ ...estiloCard, textAlign: "center", padding: "40px" }}>
-              <p style={{ color: "#888", fontSize: "13px", margin: 0 }}>
-                No tienes rutinas creadas todavía. Usa "Crear Nueva Rutina" para empezar.
-              </p>
-            </div>
-          ) : (
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: "16px" }}>
-              {rutinasFiltradas.map((rutina) => (
-                <div key={rutina.docId} style={estiloCard}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px" }}>
-                    <span style={{
-                      fontSize: "10px", fontWeight: "700", padding: "3px 10px", borderRadius: "20px",
-                      background: "#F5F5F5", color: "#555",
-                    }}>
-                      {rutina.nivel}
-                    </span>
-                    <div style={{ display: "flex", gap: "6px" }}>
+              {mostrarSelectorHora && (
+                <div style={{
+                  position: "absolute", top: "calc(100% + 4px)", left: 0, right: 0, zIndex: 20,
+                  background: "#FFFFFF", border: "0.5px solid #E5E5E5", borderRadius: "10px",
+                  padding: "12px", boxShadow: "0 8px 24px rgba(0,0,0,0.12)",
+                  maxHeight: "220px", overflowY: "auto",
+                }}>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "6px" }}>
+                    {horasComunes.map((h) => (
                       <button
-                        onClick={() => abrirEditar(rutina)}
-                        title="Editar"
-                        style={{ background: "none", border: "none", cursor: "pointer", color: "#888", fontSize: "14px" }}
+                        key={h}
+                        type="button"
+                        onClick={() => { setNuevoEvento({ ...nuevoEvento, hora: h }); setMostrarSelectorHora(false); }}
+                        style={{
+                          padding: "8px 6px", borderRadius: "8px", border: "none", cursor: "pointer",
+                          fontSize: "12px", fontWeight: "700",
+                          background: nuevoEvento.hora === h ? "#FFC800" : "#F5F5F5",
+                          color: "#0B0B0B",
+                        }}
                       >
-                        ✎
+                        {formatearHora12(h)}
                       </button>
-                      <button
-                        onClick={() => handleEliminarRutina(rutina)}
-                        title="Eliminar"
-                        style={{ background: "none", border: "none", cursor: "pointer", color: "#E24B4A", fontSize: "14px" }}
-                      >
-                        🗑
-                      </button>
-                    </div>
+                    ))}
                   </div>
-
-                  <p style={{ fontSize: "16px", fontWeight: "900", color: "#0B0B0B", margin: "0 0 4px" }}>
-                    {rutina.nombre}
-                  </p>
-                  <p style={{ fontSize: "12px", color: "#888", margin: "0 0 14px" }}>
-                    Objetivo: <strong style={{ color: "#0B0B0B" }}>{rutina.objetivo}</strong>
-                  </p>
-
-                  <div style={{
-                    display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px",
-                    background: "#F5F5F5", borderRadius: "8px", padding: "12px", marginBottom: "14px",
-                  }}>
-                    <div>
-                      <p style={{ ...labelStyle, marginBottom: "2px" }}>Frecuencia</p>
-                      <p style={{ fontWeight: "700", fontSize: "13px", color: "#0B0B0B", margin: 0 }}>{rutina.diasSemana} días/sem</p>
-                    </div>
-                    <div>
-                      <p style={{ ...labelStyle, marginBottom: "2px" }}>Ejercicios</p>
-                      <p style={{ fontWeight: "700", fontSize: "13px", color: "#0B0B0B", margin: 0 }}>{rutina.ejerciciosTotales || 0}</p>
-                    </div>
+                  <div style={{ borderTop: "0.5px solid #E5E5E5", marginTop: "10px", paddingTop: "10px" }}>
+                    <p style={{ fontSize: "10px", color: "#888", textTransform: "uppercase", margin: "0 0 6px", fontWeight: "700" }}>
+                      Hora exacta
+                    </p>
+                    <input
+                      type="time"
+                      value={nuevoEvento.hora}
+                      onChange={(e) => setNuevoEvento({ ...nuevoEvento, hora: e.target.value })}
+                      style={{ ...estiloInput, margin: 0 }}
+                    />
                   </div>
-
-                  <button
-                    onClick={() => setRutinaParaAsignar(rutina)}
-                    style={{
-                      width: "100%", background: "#0B0B0B", color: "#FFF", fontWeight: "700",
-                      fontSize: "13px", padding: "12px", borderRadius: "8px", border: "none", cursor: "pointer",
-                    }}
-                  >
-                    Asignar Cliente
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-        </>
-      ) : (
-        /* Diseñador de rutinas */
-        <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: "20px", alignItems: "start" }}>
-          <div style={{ display: "flex", flexDirection: "column", gap: "20px" }}>
-            {/* Configuración general */}
-            <div style={estiloCard}>
-              <p style={{ fontSize: "12px", fontWeight: "900", color: "#FFC800", textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: "14px" }}>
-                1. Configuración General
-              </p>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: "14px", marginBottom: "14px" }}>
-                <div>
-                  <label style={labelStyle}>Nombre del Programa</label>
-                  <input
-                    type="text" style={inputStyle}
-                    value={form.nombre}
-                    onChange={(e) => setForm({ ...form, nombre: e.target.value })}
-                    placeholder="Ej. Hipertrofia Intermedia - Bloque 1"
-                  />
-                </div>
-              </div>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "14px" }}>
-                <div>
-                  <label style={labelStyle}>Nivel</label>
-                  <select style={inputStyle} value={form.nivel} onChange={(e) => setForm({ ...form, nivel: e.target.value })}>
-                    {NIVELES.map((n) => <option key={n} value={n}>{n}</option>)}
-                  </select>
-                </div>
-                <div>
-                  <label style={labelStyle}>Objetivo</label>
-                  <select style={inputStyle} value={form.objetivo} onChange={(e) => setForm({ ...form, objetivo: e.target.value })}>
-                    <option>Hipertrofia / Masa Muscular</option>
-                    <option>Pérdida de Grasa</option>
-                    <option>Fuerza Máxima</option>
-                    <option>Salud / Movilidad</option>
-                  </select>
-                </div>
-                <div>
-                  <label style={labelStyle}>Días / semana</label>
-                  <input
-                    type="number" min="1" max="7" style={inputStyle}
-                    value={form.diasSemana}
-                    onChange={(e) => setForm({ ...form, diasSemana: e.target.value })}
-                  />
-                </div>
-              </div>
-            </div>
-
-            {/* Ejercicios */}
-            <div style={estiloCard}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
-                <p style={{ fontSize: "12px", fontWeight: "900", color: "#FFC800", textTransform: "uppercase", letterSpacing: "0.04em", margin: 0 }}>
-                  2. Prescripción de Ejercicios
-                </p>
-                <button
-                  onClick={agregarEjercicio}
-                  style={{
-                    background: "#FFC800", color: "#0B0B0B", fontWeight: "700", fontSize: "12px",
-                    padding: "8px 14px", borderRadius: "8px", border: "none", cursor: "pointer",
-                  }}
-                >
-                  Agregar Ejercicio
-                </button>
-              </div>
-
-              {ejerciciosBorrador.length === 0 ? (
-                <p style={{ color: "#888", fontSize: "13px" }}>Aún no has agregado ejercicios.</p>
-              ) : (
-                <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
-                  {ejerciciosBorrador.map((ej, index) => (
-                    <div key={ej.id} style={{
-                      background: "#F5F5F5", borderRadius: "10px", padding: "14px",
-                      display: "flex", flexWrap: "wrap", alignItems: "center", gap: "10px",
-                    }}>
-                      <span style={{
-                        width: "26px", height: "26px", background: "#0B0B0B", color: "#FFC800",
-                        fontWeight: "900", fontSize: "12px", borderRadius: "6px",
-                        display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0,
-                      }}>
-                        {index + 1}
-                      </span>
-                      <input
-                        style={{ ...inputStyle, flex: "2 1 180px", background: "#FFF" }}
-                        value={ej.nombre}
-                        onChange={(e) => actualizarEjercicio(ej.id, "nombre", e.target.value)}
-                        placeholder="Nombre del ejercicio"
-                      />
-                      <input
-                        style={{ ...inputStyle, flex: "1 1 100px", background: "#FFF" }}
-                        value={ej.grupo}
-                        onChange={(e) => actualizarEjercicio(ej.id, "grupo", e.target.value)}
-                        placeholder="Grupo muscular"
-                      />
-                      <input
-                        style={{ ...inputStyle, width: "70px", background: "#FFF" }}
-                        value={ej.series}
-                        onChange={(e) => actualizarEjercicio(ej.id, "series", e.target.value)}
-                        placeholder="Series"
-                      />
-                      <input
-                        style={{ ...inputStyle, width: "80px", background: "#FFF" }}
-                        value={ej.reps}
-                        onChange={(e) => actualizarEjercicio(ej.id, "reps", e.target.value)}
-                        placeholder="Reps"
-                      />
-                      <input
-                        style={{ ...inputStyle, width: "80px", background: "#FFF" }}
-                        value={ej.descanso}
-                        onChange={(e) => actualizarEjercicio(ej.id, "descanso", e.target.value)}
-                        placeholder="Descanso"
-                      />
-                      <button
-                        onClick={() => eliminarEjercicio(ej.id)}
-                        style={{ background: "none", border: "none", color: "#E24B4A", cursor: "pointer", fontSize: "16px" }}
-                        title="Eliminar ejercicio"
-                      >
-                        ✕
-                      </button>
-                    </div>
-                  ))}
                 </div>
               )}
             </div>
-
-            <div style={{ display: "flex", justifyContent: "flex-end", gap: "10px" }}>
-              <button
-                type="button"
-                onClick={() => { resetForm(); setModoCrear(false); }}
-                style={{
-                  background: "#FFF", color: "#555", fontWeight: "700", fontSize: "13px",
-                  padding: "12px 20px", borderRadius: "8px", border: "0.5px solid #E5E5E5", cursor: "pointer",
-                }}
-              >
-                Cancelar
-              </button>
-              <button
-                onClick={handleGuardarRutina}
-                disabled={guardando}
-                style={{
-                  background: "#FFC800", color: "#0B0B0B", fontWeight: "900", fontSize: "13px",
-                  padding: "12px 22px", borderRadius: "8px", border: "none",
-                  cursor: guardando ? "default" : "pointer", opacity: guardando ? 0.6 : 1,
-                }}
-              >
-                {guardando ? "Guardando..." : "Guardar Rutina"}
-              </button>
-            </div>
           </div>
+          <input placeholder="Descripción (opcional)" value={nuevoEvento.descripcion}
+            onChange={e => setNuevoEvento({ ...nuevoEvento, descripcion: e.target.value })}
+            style={estiloInput} />
+          <div style={{ display: "flex", gap: "10px" }}>
+            <button onClick={crearEvento} disabled={cargando} style={{
+              flex: 1, background: "#FFC800", color: "#0B0B0B", fontWeight: "700",
+              fontSize: "14px", padding: "12px", borderRadius: "8px", border: "none", cursor: "pointer"
+            }}>
+              {cargando ? "Guardando..." : "Crear evento"}
+            </button>
+            <button onClick={() => { setMostrarForm(false); setError(""); }} style={{
+              flex: 1, background: "#F5F5F5", color: "#555", fontWeight: "700",
+              fontSize: "14px", padding: "12px", borderRadius: "8px", border: "none", cursor: "pointer"
+            }}>
+              Cancelar
+            </button>
+          </div>
+        </div>
+      )}
 
-          {/* Panel lateral: asignación directa dentro del diseñador */}
-          <div style={{ ...estiloCard, position: "sticky", top: "20px" }}>
-            <p style={{ fontSize: "14px", fontWeight: "900", color: "#0B0B0B", marginBottom: "14px" }}>
-              Vista Previa
+      <div style={{ display: "flex", gap: "20px" }}>
+        {/* Calendario */}
+        <div style={{ flex: 1, background: "#FFFFFF", border: "0.5px solid #E5E5E5", borderRadius: "12px", padding: "16px" }}>
+          <style>{`
+            .mi-calendario .fc-toolbar-title {
+              font-size: 18px; font-weight: 900; color: #0B0B0B; text-transform: capitalize;
+            }
+            .mi-calendario .fc-button {
+              background: #F5F5F5 !important; border: none !important; color: #0B0B0B !important;
+              font-weight: 700 !important; box-shadow: none !important; text-transform: capitalize;
+              border-radius: 8px !important; padding: 6px 12px !important;
+            }
+            .mi-calendario .fc-button:hover { background: #EAEAEA !important; }
+            .mi-calendario .fc-button-active, .mi-calendario .fc-button:active {
+              background: #FFC800 !important; color: #0B0B0B !important;
+            }
+            .mi-calendario .fc-col-header-cell {
+              background: #FAFAFA; padding: 8px 0;
+            }
+            .mi-calendario .fc-col-header-cell-cushion {
+              font-size: 11px; font-weight: 700; color: #888; text-transform: uppercase;
+              letter-spacing: 0.04em; text-decoration: none;
+            }
+            .mi-calendario .fc-daygrid-day-number {
+              font-size: 12px; color: #0B0B0B; font-weight: 600; padding: 6px;
+              text-decoration: none;
+            }
+            .mi-calendario .fc-day-today {
+              background: #FFF8E1 !important;
+            }
+            .mi-calendario .fc-day-today .fc-daygrid-day-number {
+              background: #FFC800; color: #0B0B0B; border-radius: 50%;
+              width: 22px; height: 22px; display: flex; align-items: center; justify-content: center;
+              font-weight: 900; margin: 4px;
+            }
+            .mi-calendario .fc-daygrid-day:hover {
+              background: #FAFAFA; cursor: pointer;
+            }
+            .mi-calendario .fc-event {
+              border: none !important; border-radius: 6px !important; padding: 1px 4px !important;
+              font-size: 11px !important; font-weight: 700 !important;
+            }
+            .mi-calendario .fc-daygrid-event-dot {
+              border-color: #FFC800 !important;
+            }
+            .mi-calendario table { border-color: #F0F0F0; }
+            .mi-calendario .fc-scrollgrid { border-color: #F0F0F0 !important; }
+            .mi-calendario td, .mi-calendario th { border-color: #F0F0F0 !important; }
+          `}</style>
+          <div className="mi-calendario">
+            <FullCalendar
+              plugins={[dayGridPlugin, interactionPlugin]}
+              initialView="dayGridMonth"
+              locale={esLocale}
+              events={eventos}
+              dateClick={handleDiaClick}
+              headerToolbar={{ left: "prev,next today", center: "title", right: "" }}
+              height="auto"
+              eventColor="#FFC800"
+              eventTextColor="#0B0B0B"
+            />
+          </div>
+        </div>
+
+        {/* Panel lateral */}
+        {diaSeleccionado && (
+          <div style={{ width: "280px", background: "#FFFFFF", border: "0.5px solid #E5E5E5", borderRadius: "12px", padding: "20px", height: "fit-content" }}>
+            <h4 style={{ fontSize: "14px", fontWeight: "900", color: "#0B0B0B", marginBottom: "4px", textTransform: "capitalize" }}>
+              {new Date(diaSeleccionado + "T00:00:00").toLocaleDateString("es-DO", { weekday: "long", day: "numeric", month: "long" })}
+            </h4>
+            <p style={{ fontSize: "12px", color: "#888", marginBottom: "16px" }}>
+              {eventosDia.length} evento{eventosDia.length !== 1 ? "s" : ""}
             </p>
-            <div style={{ background: "#F5F5F5", borderRadius: "10px", padding: "16px" }}>
-              <p style={{ fontSize: "15px", fontWeight: "900", color: "#0B0B0B", margin: "0 0 4px" }}>
-                {form.nombre || "Nombre de la rutina"}
-              </p>
-              <p style={{ fontSize: "12px", color: "#888", margin: "0 0 10px" }}>
-                {form.nivel} · {form.objetivo}
-              </p>
-              <p style={{ fontSize: "12px", color: "#555", margin: 0 }}>
-                {form.diasSemana} días/semana · {ejerciciosBorrador.length} ejercicios
-              </p>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Modal: Asignación directa desde la biblioteca */}
-      {rutinaParaAsignar && (
-        <div style={{
-          position: "fixed", inset: 0, background: "rgba(11,11,11,0.45)",
-          display: "flex", alignItems: "center", justifyContent: "center", padding: "16px", zIndex: 50,
-        }}>
-          <div style={{ ...estiloCard, maxWidth: "420px", width: "100%" }}>
-            <div style={{ borderBottom: "0.5px solid #E5E5E5", paddingBottom: "14px", marginBottom: "16px" }}>
-              <h3 style={{ fontSize: "18px", fontWeight: "900", color: "#0B0B0B", margin: 0 }}>
-                Asignar "{rutinaParaAsignar.nombre}"
-              </h3>
-            </div>
-
-            <form onSubmit={handleAsignar} style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
-              <div>
-                <label style={labelStyle}>Cliente Destino</label>
-                <select
-                  required style={inputStyle}
-                  value={clienteDestino}
-                  onChange={(e) => setClienteDestino(e.target.value)}
-                >
-                  <option value="">Selecciona un cliente</option>
-                  {clientes.map((c) => (
-                    <option key={c.docId} value={c.docId}>{c.nombre}</option>
+            {eventosDia.length === 0 ? (
+              <div style={{ background: "#F5F5F5", borderRadius: "10px", padding: "20px", textAlign: "center" }}>
+                <p style={{ color: "#888", fontSize: "13px", margin: 0 }}>No hay eventos este día</p>
+              </div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+                {eventosDia
+                  .slice()
+                  .sort((a, b) => (a.start || "").localeCompare(b.start || ""))
+                  .map((e) => (
+                    <div key={e.id} style={{ background: "#F5F5F5", borderRadius: "10px", padding: "12px 14px" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: e.description ? "4px" : 0 }}>
+                        {e.start?.includes("T") && (
+                          <span style={{
+                            background: "#FFF8E1", color: "#0B0B0B", fontWeight: "900", fontSize: "11px",
+                            padding: "3px 8px", borderRadius: "6px", border: "1px solid #FFC800", flexShrink: 0, whiteSpace: "nowrap",
+                          }}>
+                            {new Date(e.start).toLocaleTimeString("es-DO", { hour: "2-digit", minute: "2-digit" })}
+                          </span>
+                        )}
+                        <p style={{ fontWeight: "700", fontSize: "13px", color: "#0B0B0B", margin: 0 }}>{e.title}</p>
+                      </div>
+                      {e.description && <p style={{ fontSize: "11px", color: "#888", margin: "4px 0 0" }}>{e.description}</p>}
+                    </div>
                   ))}
-                </select>
-                {clientes.length === 0 && (
-                  <p style={{ fontSize: "11px", color: "#B8860B", marginTop: "6px" }}>
-                    Aún no tienes clientes registrados para asignar.
-                  </p>
-                )}
               </div>
-              <div>
-                <label style={labelStyle}>Instrucciones Adicionales</label>
-                <textarea
-                  rows="3" style={{ ...inputStyle, resize: "vertical" }}
-                  value={notaAsignacion}
-                  onChange={(e) => setNotaAsignacion(e.target.value)}
-                  placeholder="Notas técnicas para el atleta..."
-                />
-              </div>
-
-              <div style={{ display: "flex", justifyContent: "flex-end", gap: "10px", marginTop: "6px" }}>
-                <button
-                  type="button"
-                  onClick={() => { setRutinaParaAsignar(null); setClienteDestino(""); setNotaAsignacion(""); }}
-                  style={{
-                    background: "#FFF", color: "#555", fontWeight: "700", fontSize: "13px",
-                    padding: "10px 18px", borderRadius: "8px", border: "0.5px solid #E5E5E5", cursor: "pointer",
-                  }}
-                >
-                  Cancelar
-                </button>
-                <button
-                  type="submit"
-                  style={{
-                    background: "#FFC800", color: "#0B0B0B", fontWeight: "900", fontSize: "13px",
-                    padding: "10px 20px", borderRadius: "8px", border: "none", cursor: "pointer",
-                  }}
-                >
-                  Guardar y Asignar
-                </button>
-              </div>
-            </form>
+            )}
           </div>
-        </div>
-      )}
+        )}
+      </div>
     </div>
   );
 }

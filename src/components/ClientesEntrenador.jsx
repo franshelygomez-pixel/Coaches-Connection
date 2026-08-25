@@ -85,7 +85,7 @@ export default function ClientesEntrenador({ usuario }) {
     estado: "En Evaluación",
     edad: "",
     objetivo: "Hipertrofia / Masa Muscular",
-    plan: "Personalizado Premium",
+    plan: "Plan Smart",
     observaciones: "",
   });
 
@@ -181,14 +181,53 @@ export default function ClientesEntrenador({ usuario }) {
 
   const handleGuardarCliente = async (e) => {
     e.preventDefault();
-    if (!nuevoCliente.nombre || !nuevoCliente.email || !coachId) return;
+    setError(null);
+
+    if (!nuevoCliente.nombre.trim() || !nuevoCliente.email.trim()) {
+      setError("Nombre y correo son obligatorios.");
+      return;
+    }
+    if (!coachId) {
+      setError("No se detectó una sesión activa. Vuelve a iniciar sesión.");
+      return;
+    }
+
+    const soloLetras = /^[a-zA-ZáéíóúÁÉÍÓÚñÑ\s]+$/;
+    if (!soloLetras.test(nuevoCliente.nombre.trim())) {
+      setError("El nombre solo puede contener letras.");
+      return;
+    }
+    if (nuevoCliente.apellido && !soloLetras.test(nuevoCliente.apellido.trim())) {
+      setError("El apellido solo puede contener letras.");
+      return;
+    }
+
+    const formatoCorreo = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
+    if (!formatoCorreo.test(nuevoCliente.email.trim())) {
+      setError("El formato del correo no es válido.");
+      return;
+    }
+
+    if (nuevoCliente.telefono && nuevoCliente.telefono.replace(/\D/g, "").length > 10) {
+      setError("El teléfono no puede tener más de 10 dígitos.");
+      return;
+    }
+
+    // Evitar correos duplicados dentro de tus propios clientes
+    const yaExiste = clientes.some(
+      (c) => c.email.trim().toLowerCase() === nuevoCliente.email.trim().toLowerCase()
+    );
+    if (yaExiste) {
+      setError("Ya tienes un cliente registrado con ese correo.");
+      return;
+    }
 
     setGuardando(true);
     try {
       await addDoc(collection(db, "clientes"), {
-        nombre: nuevoCliente.nombre,
-        apellido: nuevoCliente.apellido || "",
-        email: nuevoCliente.email,
+        nombre: nuevoCliente.nombre.trim(),
+        apellido: nuevoCliente.apellido.trim() || "",
+        email: nuevoCliente.email.trim(),
         telefono: nuevoCliente.telefono || "",
         estado: nuevoCliente.estado,
         coachId,
@@ -203,7 +242,7 @@ export default function ClientesEntrenador({ usuario }) {
       setNuevoCliente({
         nombre: "", apellido: "", email: "", telefono: "",
         estado: "En Evaluación", edad: "",
-        objetivo: "Hipertrofia / Masa Muscular", plan: "Personalizado Premium", observaciones: "",
+        objetivo: "Hipertrofia / Masa Muscular", plan: "Plan Smart", observaciones: "",
       });
       setModoCrear(false);
     } catch (err) {
@@ -269,12 +308,40 @@ export default function ClientesEntrenador({ usuario }) {
 
   const handleGuardarMedicion = async (e) => {
     e.preventDefault();
-    if (!clienteSeleccionado || !nuevaMedicion.peso || !nuevaMedicion.estatura) return;
+    setError(null);
+
+    if (!clienteSeleccionado) return;
+
+    if (!nuevaMedicion.fecha) {
+      setError("Selecciona la fecha de la medición.");
+      return;
+    }
+    if (!nuevaMedicion.peso || !nuevaMedicion.estatura) {
+      setError("Peso y estatura son obligatorios para registrar una medición.");
+      return;
+    }
 
     const peso = parseFloat(nuevaMedicion.peso);
     const estatura = parseFloat(nuevaMedicion.estatura);
     const cintura = nuevaMedicion.cintura ? parseFloat(nuevaMedicion.cintura) : null;
     const cadera = nuevaMedicion.cadera ? parseFloat(nuevaMedicion.cadera) : null;
+
+    if (isNaN(peso) || peso <= 0) {
+      setError("El peso debe ser un número mayor a 0.");
+      return;
+    }
+    if (isNaN(estatura) || estatura <= 0) {
+      setError("La estatura debe ser un número mayor a 0.");
+      return;
+    }
+    if (nuevaMedicion.cintura && (isNaN(cintura) || cintura <= 0)) {
+      setError("La cintura debe ser un número mayor a 0.");
+      return;
+    }
+    if (nuevaMedicion.cadera && (isNaN(cadera) || cadera <= 0)) {
+      setError("La cadera debe ser un número mayor a 0.");
+      return;
+    }
 
     const imc = Math.round((peso / ((estatura / 100) ** 2)) * 10) / 10;
     const icc = cintura && cadera ? Math.round((cintura / cadera) * 100) / 100 : null;
@@ -557,13 +624,7 @@ export default function ClientesEntrenador({ usuario }) {
                 </div>
               </div>
 
-              <div style={{
-                background: "#F5F5F5", borderRadius: "8px", padding: "12px 14px", marginTop: "14px",
-                fontSize: "12px", color: "#555",
-              }}>
-                Peso, estatura, cintura y cadera se registran después, desde el expediente del cliente
-                (sección "Historial de Mediciones"), para poder llevar la evolución en el tiempo.
-              </div>
+              
             </div>
 
             <div>
@@ -591,9 +652,8 @@ export default function ClientesEntrenador({ usuario }) {
                     value={nuevoCliente.plan}
                     onChange={(e) => setNuevoCliente({ ...nuevoCliente, plan: e.target.value })}
                   >
-                    <option value="Personalizado Premium">Personalizado Premium</option>
-                    <option value="Acondicionamiento Base">Acondicionamiento Base</option>
-                    <option value="Fuerza Elite">Fuerza Elite</option>
+                    <option value="Plan Smart">Plan Smart</option>
+                    <option value="Plan Black">Plan Black</option>
                   </select>
                 </div>
               </div>

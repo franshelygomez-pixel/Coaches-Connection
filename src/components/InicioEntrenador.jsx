@@ -17,6 +17,9 @@ export default function InicioEntrenador({ usuario, datosUsuario }) {
 
   const token = localStorage.getItem("googleCalendarToken");
 
+  // --- Fecha LOCAL de hoy correcta (evita el desfase de toISOString() en UTC-4) ---
+  const hoyStr = `${hoy.getFullYear()}-${String(hoy.getMonth() + 1).padStart(2, "0")}-${String(hoy.getDate()).padStart(2, "0")}`;
+
   // Cargar clientes del coach
   useEffect(() => {
     const cargarClientes = async () => {
@@ -42,7 +45,6 @@ export default function InicioEntrenador({ usuario, datosUsuario }) {
     const cargarEventosFirestore = async () => {
       if (!coachId) return;
       try {
-        const hoyStr = new Date().toISOString().split("T")[0];
         const q = query(
           collection(db, "eventos"),
           where("coachId", "==", coachId),
@@ -55,16 +57,16 @@ export default function InicioEntrenador({ usuario, datosUsuario }) {
       }
     };
     cargarEventosFirestore();
-  }, [coachId]);
+  }, [coachId, hoyStr]);
 
   // Cargar eventos de Google Calendar
   useEffect(() => {
     const cargarEventosGoogle = async () => {
       if (!token) return;
       try {
-        const hoyStr = new Date().toISOString().split("T")[0];
-        const inicio = `${hoyStr}T00:00:00Z`;
-        const fin = `${hoyStr}T23:59:59Z`;
+        // Límites del día LOCAL (UTC-4), no del día UTC
+        const inicio = `${hoyStr}T00:00:00-04:00`;
+        const fin = `${hoyStr}T23:59:59-04:00`;
         const res = await fetch(
           `https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=${inicio}&timeMax=${fin}&singleEvents=true&orderBy=startTime`,
           { headers: { Authorization: `Bearer ${token}` } }
@@ -76,7 +78,7 @@ export default function InicioEntrenador({ usuario, datosUsuario }) {
       }
     };
     cargarEventosGoogle();
-  }, [token]);
+  }, [token, hoyStr]);
 
   // Unificamos las dos fuentes de eventos en un solo array para pintar la UI
   const eventos = [
