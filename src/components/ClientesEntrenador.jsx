@@ -1,16 +1,5 @@
-import { useState, useEffect } from "react";
-import {
-  collection,
-  query,
-  where,
-  onSnapshot,
-  addDoc,
-  updateDoc,
-  doc,
-  serverTimestamp,
-} from "firebase/firestore";
-// AJUSTA esta ruta si tu firebase.js está en otro lugar
-import { db, auth } from "../firebase";
+import { useState, useEffect, useCallback } from "react";
+import { supabase } from "../supabaseClient";
 
 // --- Mismo lenguaje de diseño que InicioEntrenador.jsx ---
 const estiloCard = {
@@ -42,15 +31,6 @@ const labelStyle = {
   display: "block",
 };
 
-// Normaliza estado leído de Firestore (soporta datos viejos en minúsculas)
-const normalizarEstado = (valor) => {
-  const v = (valor || "").toLowerCase();
-  if (v.startsWith("activo")) return "Activo";
-  if (v.includes("evalu")) return "En Evaluación";
-  if (v.startsWith("inactivo")) return "Inactivo";
-  return "En Evaluación";
-};
-
 const ESTADO_COLORES = {
   "Activo": { bg: "#E1F5EE", color: "#085041" },
   "En Evaluación": { bg: "#FFF8E1", color: "#B8860B" },
@@ -58,6 +38,20 @@ const ESTADO_COLORES = {
 };
 
 const FILTROS = ["Todos", "Activo", "En Evaluación", "Inactivo"];
+
+// Adapta una fila de la tabla `clientes` al shape que ya usa la UI
+const adaptarCliente = (data) => ({
+  docId: data.id,
+  nombre: `${data.nombre || ""} ${data.apellido || ""}`.trim() || "Sin nombre",
+  email: data.email || "",
+  telefono: data.telefono || "--",
+  estado: data.estado || "En Evaluación",
+  plan: data.plan || "Sin plan asignado",
+  objetivo: data.objetivo || "Sin definir",
+  pesoActual: data.peso_actual ? `${data.peso_actual} kg` : "--",
+  rutinaAsignada: data.rutina_asignada || "Sin Asignar",
+  rutinaId: data.rutina_id || "",
+});
 
 export default function ClientesEntrenador({ usuario }) {
   const [modoCrear, setModoCrear] = useState(false);
@@ -75,7 +69,7 @@ export default function ClientesEntrenador({ usuario }) {
   const [rutinaSeleccionada, setRutinaSeleccionada] = useState("");
   const [asignandoRutina, setAsignandoRutina] = useState(false);
 
-  const coachId = usuario?.uid || auth.currentUser?.uid;
+  const coachId = usuario?.id;
 
   const [nuevoCliente, setNuevoCliente] = useState({
     nombre: "",
@@ -102,57 +96,69 @@ export default function ClientesEntrenador({ usuario }) {
     cadera: "",
   });
 
-  // --- Escucha en tiempo real de los clientes del coach logueado ---
-  useEffect(() => {
+  const cargarClientes = useCallback(async () => {
     if (!coachId) {
       setCargando(false);
       setError("No se detectó una sesión activa.");
       return;
     }
+    const { data, error: errLectura } = await supabase
+      .from("clientes")
+      .select("*")
+      .eq("coach_id", coachId)
+      .order("nombre", { ascending: true });
 
-    const q = query(collection(db, "clientes"), where("coachId", "==", coachId));
-
-    const unsubscribe = onSnapshot(
-      q,
-      (snapshot) => {
-        const lista = snapshot.docs.map((docSnap) => {
-          const data = docSnap.data();
-          return {
-            docId: docSnap.id,
-            nombre: `${data.nombre || ""} ${data.apellido || ""}`.trim() || "Sin nombre",
-            email: data.email || "",
-            telefono: data.telefono || "--",
-            estado: normalizarEstado(data.estado),
-            plan: data.plan || "Sin plan asignado",
-            objetivo: data.objetivo || "Sin definir",
-            pesoActual: data.pesoActual ? `${data.pesoActual} kg` : "--",
-            rutinaAsignada: data.rutinaAsignada || "Sin Asignar",
-          };
-        });
-        lista.sort((a, b) => a.nombre.localeCompare(b.nombre));
-        setClientes(lista);
-        setCargando(false);
-      },
-      (err) => {
-        console.error("Error al leer clientes:", err);
-        setError("No se pudieron cargar los clientes. Verifica las reglas de Firestore.");
-        setCargando(false);
-      }
-    );
-
-    return () => unsubscribe();
+    if (errLectura) {
+      console.error("Error al leer clientes:", errLectura);
+      setError("No se pudieron cargar los clientes. Verifica las políticas RLS.");
+    } else {
+      setClientes((data || []).map(adaptarCliente));
+      setError(null);
+    }
+    setCargando(false);
   }, [coachId]);
+
+  // --- Carga inicial + suscripción en tiempo real (reemplaza onSnapshot) ---
+  useEffect(() => {
+    cargarClientes();
+    if (!coachId) return;
+
+    const canal = supabase
+      .channel(`clientes-coach-${coachId}`)
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "clientes", filter: `coach_id=eq.${coachId}` },
+        () => cargarClientes()
+      )
+      .subscribe();
+
+    return () => supabase.removeChannel(canal);
+  }, [coachId, cargarClientes]);
 
   // --- Rutinas del coach, para el modal de asignación ---
   useEffect(() => {
     if (!coachId) return;
-    const q = query(collection(db, "rutinas"), where("coachId", "==", coachId));
-    const unsub = onSnapshot(q, (snap) => {
-      const lista = snap.docs.map((d) => ({ docId: d.id, ...d.data() }));
-      lista.sort((a, b) => (a.nombre || "").localeCompare(b.nombre || ""));
-      setRutinas(lista);
-    });
-    return () => unsub();
+
+    const cargarRutinas = async () => {
+      const { data } = await supabase
+        .from("rutinas")
+        .select("*")
+        .eq("coach_id", coachId)
+        .order("nombre", { ascending: true });
+      setRutinas((data || []).map((r) => ({ docId: r.id, ...r })));
+    };
+    cargarRutinas();
+
+    const canal = supabase
+      .channel(`rutinas-coach-${coachId}`)
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "rutinas", filter: `coach_id=eq.${coachId}` },
+        cargarRutinas
+      )
+      .subscribe();
+
+    return () => supabase.removeChannel(canal);
   }, [coachId]);
 
   // --- Historial de mediciones del cliente que tiene el expediente abierto ---
@@ -161,22 +167,30 @@ export default function ClientesEntrenador({ usuario }) {
       setMediciones([]);
       return;
     }
-    setCargandoMediciones(true);
-    const q = query(collection(db, "mediciones"), where("clienteId", "==", clienteSeleccionado.docId));
-    const unsub = onSnapshot(
-      q,
-      (snap) => {
-        const lista = snap.docs.map((d) => ({ docId: d.id, ...d.data() }));
-        lista.sort((a, b) => (b.fecha || "").localeCompare(a.fecha || ""));
-        setMediciones(lista);
-        setCargandoMediciones(false);
-      },
-      (err) => {
-        console.error("Error leyendo mediciones:", err);
-        setCargandoMediciones(false);
-      }
-    );
-    return () => unsub();
+
+    const cargarMediciones = async () => {
+      setCargandoMediciones(true);
+      const { data, error: errMed } = await supabase
+        .from("mediciones")
+        .select("*")
+        .eq("cliente_id", clienteSeleccionado.docId)
+        .order("fecha", { ascending: false });
+      if (errMed) console.error("Error leyendo mediciones:", errMed);
+      setMediciones((data || []).map((m) => ({ docId: m.id, ...m })));
+      setCargandoMediciones(false);
+    };
+    cargarMediciones();
+
+    const canal = supabase
+      .channel(`mediciones-cliente-${clienteSeleccionado.docId}`)
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "mediciones", filter: `cliente_id=eq.${clienteSeleccionado.docId}` },
+        cargarMediciones
+      )
+      .subscribe();
+
+    return () => supabase.removeChannel(canal);
   }, [clienteSeleccionado?.docId]);
 
   const handleGuardarCliente = async (e) => {
@@ -223,43 +237,47 @@ export default function ClientesEntrenador({ usuario }) {
     }
 
     setGuardando(true);
-    try {
-      await addDoc(collection(db, "clientes"), {
-        nombre: nuevoCliente.nombre.trim(),
-        apellido: nuevoCliente.apellido.trim() || "",
-        email: nuevoCliente.email.trim(),
-        telefono: nuevoCliente.telefono || "",
-        estado: nuevoCliente.estado,
-        coachId,
-        creadoEn: serverTimestamp(),
-        objetivo: nuevoCliente.objetivo,
-        plan: nuevoCliente.plan,
-        edad: nuevoCliente.edad || "",
-        observaciones: nuevoCliente.observaciones || "",
-        rutinaAsignada: "Sin Asignar",
-      });
+    const { error: errInsert } = await supabase.from("clientes").insert({
+      nombre: nuevoCliente.nombre.trim(),
+      apellido: nuevoCliente.apellido.trim() || "",
+      email: nuevoCliente.email.trim(),
+      telefono: nuevoCliente.telefono || "",
+      estado: nuevoCliente.estado,
+      coach_id: coachId,
+      objetivo: nuevoCliente.objetivo,
+      plan: nuevoCliente.plan,
+      edad: nuevoCliente.edad || null,
+      observaciones: nuevoCliente.observaciones || "",
+      rutina_asignada: "Sin Asignar",
+    });
 
+    if (errInsert) {
+      console.error("Error al guardar cliente:", errInsert);
+      setError("No se pudo guardar el cliente. Intenta de nuevo.");
+    } else {
       setNuevoCliente({
         nombre: "", apellido: "", email: "", telefono: "",
         estado: "En Evaluación", edad: "",
         objetivo: "Hipertrofia / Masa Muscular", plan: "Plan Smart", observaciones: "",
       });
       setModoCrear(false);
-    } catch (err) {
-      console.error("Error al guardar cliente:", err);
-      setError("No se pudo guardar el cliente. Intenta de nuevo.");
-    } finally {
-      setGuardando(false);
+      cargarClientes();
     }
+    setGuardando(false);
   };
 
   const handleCambiarEstado = async (cliente, nuevoEstado) => {
-    try {
-      await updateDoc(doc(db, "clientes", cliente.docId), { estado: nuevoEstado });
-      setClienteSeleccionado((prev) => (prev ? { ...prev, estado: nuevoEstado } : prev));
-    } catch (err) {
-      console.error("Error al actualizar estado:", err);
+    const { error: errUpdate } = await supabase
+      .from("clientes")
+      .update({ estado: nuevoEstado })
+      .eq("id", cliente.docId);
+
+    if (errUpdate) {
+      console.error("Error al actualizar estado:", errUpdate);
       setError("No se pudo actualizar el estado del cliente.");
+    } else {
+      setClienteSeleccionado((prev) => (prev ? { ...prev, estado: nuevoEstado } : prev));
+      cargarClientes();
     }
   };
 
@@ -273,29 +291,34 @@ export default function ClientesEntrenador({ usuario }) {
     if (!clienteParaAsignarRutina) return;
 
     setAsignandoRutina(true);
-    try {
-      if (rutinaSeleccionada === "") {
-        // Quitar rutina asignada
-        await updateDoc(doc(db, "clientes", clienteParaAsignarRutina.docId), {
-          rutinaAsignada: "Sin Asignar",
-          rutinaId: "",
-        });
-      } else {
-        const rutina = rutinas.find((r) => r.docId === rutinaSeleccionada);
-        if (!rutina) return;
-        await updateDoc(doc(db, "clientes", clienteParaAsignarRutina.docId), {
-          rutinaAsignada: rutina.nombre,
-          rutinaId: rutina.docId,
-        });
+    let errAsignar = null;
+
+    if (rutinaSeleccionada === "") {
+      const { error: err } = await supabase
+        .from("clientes")
+        .update({ rutina_asignada: "Sin Asignar", rutina_id: null })
+        .eq("id", clienteParaAsignarRutina.docId);
+      errAsignar = err;
+    } else {
+      const rutina = rutinas.find((r) => r.docId === rutinaSeleccionada);
+      if (rutina) {
+        const { error: err } = await supabase
+          .from("clientes")
+          .update({ rutina_asignada: rutina.nombre, rutina_id: rutina.docId })
+          .eq("id", clienteParaAsignarRutina.docId);
+        errAsignar = err;
       }
+    }
+
+    if (errAsignar) {
+      console.error("Error al asignar rutina:", errAsignar);
+      setError("No se pudo asignar la rutina.");
+    } else {
       setClienteParaAsignarRutina(null);
       setRutinaSeleccionada("");
-    } catch (err) {
-      console.error("Error al asignar rutina:", err);
-      setError("No se pudo asignar la rutina.");
-    } finally {
-      setAsignandoRutina(false);
+      cargarClientes();
     }
+    setAsignandoRutina(false);
   };
 
   // --- IMC: cálculo y clasificación (rangos estándar OMS) ---
@@ -347,34 +370,33 @@ export default function ClientesEntrenador({ usuario }) {
     const icc = cintura && cadera ? Math.round((cintura / cadera) * 100) / 100 : null;
 
     setGuardandoMedicion(true);
-    try {
-      await addDoc(collection(db, "mediciones"), {
-        clienteId: clienteSeleccionado.docId,
-        coachId,
-        fecha: nuevaMedicion.fecha,
-        peso,
-        estatura,
-        cintura,
-        cadera,
-        imc,
-        icc,
-        creadoEn: serverTimestamp(),
-      });
+    const { error: errMedicion } = await supabase.from("mediciones").insert({
+      cliente_id: clienteSeleccionado.docId,
+      coach_id: coachId,
+      fecha: nuevaMedicion.fecha,
+      peso,
+      estatura,
+      cintura,
+      cadera,
+      imc,
+      icc,
+    });
 
-      // Denormalizamos el último peso/estatura en el cliente para que la tarjeta/lista se actualice sin ir al historial
-      await updateDoc(doc(db, "clientes", clienteSeleccionado.docId), {
-        pesoActual: peso,
-        estatura,
-      });
+    if (!errMedicion) {
+      // Denormalizamos el último peso/estatura en el cliente
+      await supabase
+        .from("clientes")
+        .update({ peso_actual: peso, estatura })
+        .eq("id", clienteSeleccionado.docId);
 
       setNuevaMedicion({ fecha: new Date().toISOString().split("T")[0], peso: "", estatura: "", cintura: "", cadera: "" });
       setMostrarFormMedicion(false);
-    } catch (err) {
-      console.error("Error al guardar medición:", err);
+      cargarClientes();
+    } else {
+      console.error("Error al guardar medición:", errMedicion);
       setError("No se pudo guardar la medición.");
-    } finally {
-      setGuardandoMedicion(false);
     }
+    setGuardandoMedicion(false);
   };
 
   const clientesFiltrados = clientes.filter((c) => {
@@ -409,7 +431,7 @@ export default function ClientesEntrenador({ usuario }) {
           </h2>
           <p style={{ fontSize: "14px", color: "#888", marginTop: "6px" }}>
             {modoCrear
-              ? "Ingresa la información del cliente para darlo de alta en Firestore."
+              ? "Ingresa la información del cliente para darlo de alta en Supabase."
               : "Consulta expedientes, asigna rutinas y da seguimiento a tus clientes."}
           </p>
         </div>
@@ -623,8 +645,6 @@ export default function ClientesEntrenador({ usuario }) {
                   />
                 </div>
               </div>
-
-              
             </div>
 
             <div>

@@ -1,6 +1,5 @@
 import { useState } from "react";
-import { auth } from "../firebase";
-import { signOut } from "firebase/auth";
+import { supabase } from "../supabaseClient";
 import Calendario from "./Calendario";
 import DashboardAdmin from "../pages/DashboardAdmin";
 import InicioEntrenador from "./InicioEntrenador";
@@ -27,6 +26,10 @@ export default function Layout({ usuario, rol, datosUsuario }) {
   const [collapsed, setCollapsed] = useState(false);
 
   const menu = rol === "admin" ? menuAdmin : menuCoach;
+
+  // Con Supabase, `usuario` (session.user) no trae displayName como Firebase.
+  // El nombre para mostrar viene de la fila de `usuarios` (datosUsuario.nombre).
+  const nombreMostrar = datosUsuario?.nombre || usuario.email;
 
   const renderVistaCoach = () => {
     switch (activo) {
@@ -85,14 +88,14 @@ export default function Layout({ usuario, rol, datosUsuario }) {
           {!collapsed && (
             <div style={{ padding: "8px", marginBottom: "8px" }}>
               <p style={{ color: "#FFFFFF", fontSize: "13px", fontWeight: "500", margin: 0 }}>
-                {usuario.displayName || usuario.email}
+                {nombreMostrar}
               </p>
               <p style={{ color: "#FFC800", fontSize: "11px", textTransform: "uppercase", letterSpacing: "1px", margin: "2px 0 0" }}>
                 {rol}
               </p>
             </div>
           )}
-          <button onClick={() => signOut(auth)} style={{
+          <button onClick={() => supabase.auth.signOut()} style={{
             display: "flex", alignItems: "center", gap: "12px",
             width: "100%", padding: "12px", borderRadius: "8px",
             border: "none", cursor: "pointer", background: "transparent",
@@ -119,7 +122,7 @@ export default function Layout({ usuario, rol, datosUsuario }) {
             background: "#FFC800", display: "flex", alignItems: "center",
             justifyContent: "center", fontWeight: "900", fontSize: "14px", color: "#0B0B0B"
           }}>
-            {(usuario.displayName || usuario.email)?.[0]?.toUpperCase()}
+            {nombreMostrar?.[0]?.toUpperCase()}
           </div>
         </div>
 

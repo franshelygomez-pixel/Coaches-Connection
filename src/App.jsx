@@ -1,11 +1,7 @@
 import { useEffect, useState } from "react";
-import { auth, db } from "./firebase";
-import { onAuthStateChanged, signOut } from "firebase/auth";
-import { doc, getDoc } from "firebase/firestore";
+import { supabase } from "./supabaseClient";
 import Login from "./pages/Login";
 import Layout from "./components/Layout";
-
-const ADMIN_EMAIL = "franshelygomez@gmail.com";
 
 const PantallaBase = ({ children }) => (
   <div style={{ minHeight: "100vh", background: "#F5F5F5", display: "flex", alignItems: "center", justifyContent: "center", padding: "16px" }}>
@@ -25,35 +21,39 @@ function App() {
   const [datosUsuario, setDatosUsuario] = useState(null);
   const [cargando, setCargando] = useState(true);
 
-  const cargarDatos = async (user) => {
-    if (user.email === ADMIN_EMAIL) {
-      setRol("admin");
-      setDatosUsuario({ nombre: "Administrador", email: user.email, rol: "admin" });
-      return;
-    }
-    const snap = await getDoc(doc(db, "usuarios", user.uid));
-    if (snap.exists()) {
-      setRol(snap.data().rol);
-      setDatosUsuario(snap.data());
-    } else {
+  const manejarSesion = async (session) => {
+    if (!session) {
+      setUsuario(null);
       setRol(null);
       setDatosUsuario(null);
+      setCargando(false);
+      return;
     }
+
+    const user = session.user;
+
+    // Tanto admin como coach se registran por correo y ya tienen su fila
+    // real en `usuarios` (creada en Registro.jsx vía registrarConCorreo).
+    const { data: fila } = await supabase
+      .from("usuarios")
+      .select("*")
+      .eq("id", user.id)
+      .maybeSingle();
+
+    setUsuario(user);
+    setRol(fila?.rol || null);
+    setDatosUsuario(fila || null);
+    setCargando(false);
   };
 
   useEffect(() => {
-    const unsub = onAuthStateChanged(auth, async (user) => {
-      if (user) {
-        setUsuario(user);
-        await cargarDatos(user);
-      } else {
-        setUsuario(null);
-        setRol(null);
-        setDatosUsuario(null);
-      }
-      setCargando(false);
+    supabase.auth.getSession().then(({ data: { session } }) => manejarSesion(session));
+
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
+      manejarSesion(session);
     });
-    return () => unsub();
+
+    return () => listener.subscription.unsubscribe();
   }, []);
 
   if (cargando) return (
@@ -73,7 +73,7 @@ function App() {
         <p style={{ fontSize: "14px", color: "#888", lineHeight: 1.6, marginBottom: "24px" }}>
           El administrador revisará tu solicitud pronto. Por favor espera.
         </p>
-        <button onClick={() => signOut(auth)} style={{
+        <button onClick={() => supabase.auth.signOut()} style={{
           background: "none", border: "none", cursor: "pointer",
           fontSize: "13px", color: "#888"
         }}>
@@ -95,7 +95,7 @@ function App() {
         <p style={{ fontSize: "14px", color: "#888", lineHeight: 1.6, marginBottom: "24px" }}>
           Tu acceso ha sido denegado. Contacta al administrador para más información.
         </p>
-        <button onClick={() => signOut(auth)} style={{
+        <button onClick={() => supabase.auth.signOut()} style={{
           background: "none", border: "none", cursor: "pointer",
           fontSize: "13px", color: "#888"
         }}>

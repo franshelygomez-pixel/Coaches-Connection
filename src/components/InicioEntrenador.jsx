@@ -1,15 +1,14 @@
 import { useEffect, useState } from "react";
-import { db } from "../firebase";
-import { collection, query, where, getDocs } from "firebase/firestore";
+import { supabase } from "../supabaseClient";
 
 export default function InicioEntrenador({ usuario, datosUsuario }) {
   const [clientes, setClientes] = useState([]);
-  const [eventosFirestore, setEventosFirestore] = useState([]);
+  const [eventosSupabase, setEventosSupabase] = useState([]);
   const [eventosGoogle, setEventosGoogle] = useState([]);
   const [cargando, setCargando] = useState(true);
 
-  const nombreEntrenador = datosUsuario?.nombre || usuario?.displayName?.split(" ")[0] || "Entrenador";
-  const coachId = usuario?.uid;
+  const nombreEntrenador = datosUsuario?.nombre || "Entrenador";
+  const coachId = usuario?.id;
 
   const hoy = new Date();
   const hora = hoy.getHours();
@@ -27,36 +26,32 @@ export default function InicioEntrenador({ usuario, datosUsuario }) {
         setCargando(false);
         return;
       }
-      try {
-        const q = query(collection(db, "clientes"), where("coachId", "==", coachId));
-        const snap = await getDocs(q);
-        setClientes(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-      } catch (e) {
-        console.error("Error cargando clientes:", e);
-      } finally {
-        setCargando(false);
-      }
+      const { data, error } = await supabase
+        .from("clientes")
+        .select("*")
+        .eq("coach_id", coachId);
+
+      if (error) console.error("Error cargando clientes:", error);
+      setClientes(data || []);
+      setCargando(false);
     };
     cargarClientes();
   }, [coachId]);
 
-  // Cargar eventos internos (Firestore)
+  // Cargar eventos internos (Supabase)
   useEffect(() => {
-    const cargarEventosFirestore = async () => {
+    const cargarEventos = async () => {
       if (!coachId) return;
-      try {
-        const q = query(
-          collection(db, "eventos"),
-          where("coachId", "==", coachId),
-          where("fecha", "==", hoyStr)
-        );
-        const snap = await getDocs(q);
-        setEventosFirestore(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-      } catch (e) {
-        console.error("Error cargando eventos Firestore:", e);
-      }
+      const { data, error } = await supabase
+        .from("eventos")
+        .select("*")
+        .eq("coach_id", coachId)
+        .eq("fecha", hoyStr);
+
+      if (error) console.error("Error cargando eventos:", error);
+      setEventosSupabase(data || []);
     };
-    cargarEventosFirestore();
+    cargarEventos();
   }, [coachId, hoyStr]);
 
   // Cargar eventos de Google Calendar
@@ -82,7 +77,7 @@ export default function InicioEntrenador({ usuario, datosUsuario }) {
 
   // Unificamos las dos fuentes de eventos en un solo array para pintar la UI
   const eventos = [
-    ...eventosFirestore.map(e => ({
+    ...eventosSupabase.map(e => ({
       id: e.id,
       titulo: e.titulo,
       descripcion: e.descripcion,
@@ -131,7 +126,7 @@ export default function InicioEntrenador({ usuario, datosUsuario }) {
           { label: "Total clientes", valor: clientes.length, color: "#FFC800" },
           { label: "Clientes activos", valor: activos.length, color: "#1D9E75" },
           { label: "En evaluación", valor: enEvaluacion.length, color: "#378ADD" },
-          { label: "Sin rutina", valor: clientes.filter(c => !c.rutinaAsignada || c.rutinaAsignada === "Sin Asignar").length, color: "#E24B4A" },
+          { label: "Sin rutina", valor: clientes.filter(c => !c.rutina_asignada || c.rutina_asignada === "Sin Asignar").length, color: "#E24B4A" },
         ].map(card => (
           <div key={card.label} style={estiloCard}>
             <p style={{ fontSize: "12px", color: "#888", marginBottom: "8px" }}>{card.label}</p>
@@ -151,7 +146,7 @@ export default function InicioEntrenador({ usuario, datosUsuario }) {
           </span>
         </div>
 
-        {!token && eventosFirestore.length === 0 ? (
+        {!token && eventosSupabase.length === 0 ? (
           <div style={{ background: "#FFF8E1", borderRadius: "8px", padding: "16px", textAlign: "center" }}>
             <p style={{ color: "#B8860B", fontSize: "13px", margin: 0 }}>
               Inicia sesión con Google para ver tus citas del calendario

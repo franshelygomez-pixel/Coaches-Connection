@@ -1,46 +1,29 @@
 import { useState } from "react";
-import { auth, provider } from "../firebase";
-import { signInWithPopup, signInWithEmailAndPassword, GoogleAuthProvider } from "firebase/auth";
+import { iniciarSesionConCorreo } from "../supabaseClient";
 import Registro from "./Registro";
 
-const ADMIN_EMAIL = "franshelygomez@gmail.com";
-
-export default function Login() {
+export default function Login({ mensajeError = "" }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [error, setError] = useState("");
+  const [error, setError] = useState(mensajeError);
   const [verRegistro, setVerRegistro] = useState(false);
+  const [cargando, setCargando] = useState(false);
 
   if (verRegistro) return <Registro onVolver={() => setVerRegistro(false)} />;
 
-  const handleGoogle = async () => {
-    try {
-      const result = await signInWithPopup(auth, provider);
-      if (result.user.email === ADMIN_EMAIL) {
-        const { signOut } = await import("firebase/auth");
-        await signOut(auth);
-        setError("Usa correo y contraseña para acceder como administrador");
-        return;
-      }
-      const credential = GoogleAuthProvider.credentialFromResult(result);
-      if (credential?.accessToken) {
-        localStorage.setItem("googleCalendarToken", credential.accessToken);
-      }
-    } catch (e) {
-      if (e.code !== "auth/cancelled-popup-request") {
-        setError("Error al iniciar sesión con Google");
-      }
-    }
-  };
-
+  // Sirve tanto para admin como para coaches: ambos se registran y entran
+  // por correo/contraseña. App.jsx decide qué pantalla mostrar después
+  // según el rol y estado guardados en la fila de `usuarios`.
   const handleLogin = async () => {
     setError("");
-    if (!email || !password) { setError("Completa todos los campos"); return; }
-    try {
-      await signInWithEmailAndPassword(auth, email, password);
-    } catch (e) {
-      setError("Correo o contraseña incorrectos");
+    if (!email || !password) {
+      setError("Completa todos los campos");
+      return;
     }
+    setCargando(true);
+    const { error } = await iniciarSesionConCorreo(email, password);
+    setCargando(false);
+    if (error) setError("Correo o contraseña incorrectos");
   };
 
   return (
@@ -64,22 +47,6 @@ export default function Login() {
 
         <div style={{ background: "#1A1A1A", border: "0.5px solid #2C2C2C", borderRadius: "12px", padding: "32px" }}>
 
-          <button onClick={handleGoogle} style={{
-            width: "100%", display: "flex", alignItems: "center", justifyContent: "center",
-            gap: "10px", background: "#FFFFFF", color: "#0B0B0B", fontWeight: "700",
-            fontSize: "14px", padding: "14px", borderRadius: "8px", border: "none",
-            cursor: "pointer", marginBottom: "24px"
-          }}>
-            <img src="https://www.google.com/favicon.ico" alt="Google" style={{ width: "18px", height: "18px" }} />
-            Continuar con Google
-          </button>
-
-          <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "24px" }}>
-            <div style={{ flex: 1, height: "0.5px", background: "#2C2C2C" }} />
-            <span style={{ color: "#555", fontSize: "12px" }}>o continúa con correo</span>
-            <div style={{ flex: 1, height: "0.5px", background: "#2C2C2C" }} />
-          </div>
-
           <input type="email" placeholder="Correo electrónico" value={email}
             onChange={(e) => setEmail(e.target.value)}
             style={{
@@ -97,12 +64,12 @@ export default function Login() {
 
           {error && <p style={{ color: "#FF4444", fontSize: "13px", marginBottom: "12px" }}>{error}</p>}
 
-          <button onClick={handleLogin} style={{
+          <button onClick={handleLogin} disabled={cargando} style={{
             width: "100%", background: "#FFC800", color: "#0B0B0B", fontWeight: "900",
             fontSize: "14px", padding: "14px", borderRadius: "8px", border: "none",
-            cursor: "pointer", letterSpacing: "0.5px"
+            cursor: cargando ? "default" : "pointer", letterSpacing: "0.5px", opacity: cargando ? 0.7 : 1
           }}>
-            INICIAR SESION
+            {cargando ? "INGRESANDO..." : "INICIAR SESION"}
           </button>
 
           <p onClick={() => setVerRegistro(true)} style={{
