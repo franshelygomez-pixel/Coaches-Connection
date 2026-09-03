@@ -27,6 +27,7 @@ export default function Registro({ onVolver }) {
   const [esAdmin, setEsAdmin] = useState(false);
   const [error, setError] = useState("");
   const [cargando, setCargando] = useState(false);
+  const [correoEnviado, setCorreoEnviado] = useState(false);
 
   const handleChange = (e) => setForm({ ...form, [e.target.name]: e.target.value });
 
@@ -108,9 +109,7 @@ export default function Registro({ onVolver }) {
 
     if (errorRegistro) {
       const msg = errorRegistro.message || "";
-      if (msg.includes("ya está registrado")) {
-        setError(msg);
-      } else if (msg.toLowerCase().includes("already registered") || msg.toLowerCase().includes("already exists")) {
+      if (msg.toLowerCase().includes("already registered") || msg.toLowerCase().includes("already exists") || msg.toLowerCase().includes("user already")) {
         setError("Este correo ya está registrado. Intenta iniciar sesión.");
       } else if (msg.toLowerCase().includes("password")) {
         setError("La contraseña debe tener al menos 6 caracteres");
@@ -121,11 +120,45 @@ export default function Registro({ onVolver }) {
       } else {
         setError("Error al registrarse. Intenta de nuevo.");
       }
+      return;
     }
-    // Si no hay error, onAuthStateChange en App.jsx toma el control:
-    // para coach mostrará la pantalla de "pendiente de aprobación",
-    // para admin entrará directo (estado ya queda 'activo').
+
+
+    setCorreoEnviado(true);
   };
+
+  if (correoEnviado) {
+    return (
+      <div style={{ minHeight: "100vh", background: "#0B0B0B", display: "flex", alignItems: "center", justifyContent: "center", padding: "24px" }}>
+        <div style={{ background: "#1A1A1A", border: "0.5px solid #2C2C2C", borderRadius: "12px", padding: "48px", maxWidth: "460px", width: "100%", textAlign: "center" }}>
+          <div style={{
+            width: "64px", height: "64px", background: "#FFC800", borderRadius: "50%",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            margin: "0 auto 24px", fontSize: "28px", fontWeight: "900", color: "#0B0B0B"
+          }}>
+            ✉
+          </div>
+          <h2 style={{ fontSize: "22px", fontWeight: "900", color: "#FFFFFF", marginBottom: "12px" }}>
+            Revisa tu correo
+          </h2>
+          <p style={{ fontSize: "14px", color: "#AAA", lineHeight: 1.6, marginBottom: "8px" }}>
+            Te enviamos un enlace de confirmación a <strong style={{ color: "#FFF" }}>{form.correo}</strong>.
+          </p>
+          <p style={{ fontSize: "14px", color: "#AAA", lineHeight: 1.6, marginBottom: "28px" }}>
+            Haz clic en ese enlace para confirmar que este correo es tuyo.
+            {!esAdmin && " Después de confirmarlo, tu solicitud quedará en espera de aprobación del administrador."}
+          </p>
+          <button onClick={onVolver} style={{
+            background: "#FFC800", color: "#0B0B0B", fontWeight: "900",
+            fontSize: "14px", padding: "12px 24px", borderRadius: "8px",
+            border: "none", cursor: "pointer"
+          }}>
+            Volver al inicio de sesión
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div style={{ minHeight: "100vh", background: "#0B0B0B", display: "flex" }}>
@@ -249,7 +282,7 @@ export default function Registro({ onVolver }) {
               borderRadius: "8px", padding: "12px 16px",
               marginBottom: "16px", display: "flex", alignItems: "flex-start", gap: "10px"
             }}>
-              <span style={{ color: "#CC0000", fontSize: "16px", flexShrink: 0 }}>!</span>
+              <span style={{ color: "#CC0000", fontWeight: "900", flexShrink: 0 }}>!</span>
               <p style={{ color: "#CC0000", fontSize: "13px", margin: 0, lineHeight: 1.5 }}>{error}</p>
             </div>
           )}

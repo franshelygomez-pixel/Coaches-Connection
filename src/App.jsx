@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { supabase } from "./supabaseClient";
+import { supabase, crearPerfilDesdeMetadata } from "./supabaseClient";
 import Login from "./pages/Login";
 import Layout from "./components/Layout";
 
@@ -32,13 +32,20 @@ function App() {
 
     const user = session.user;
 
-    // Tanto admin como coach se registran por correo y ya tienen su fila
-    // real en `usuarios` (creada en Registro.jsx vía registrarConCorreo).
-    const { data: fila } = await supabase
+    let { data: fila } = await supabase
       .from("usuarios")
       .select("*")
       .eq("id", user.id)
       .maybeSingle();
+
+
+    if (!fila) {
+      const { perfil, error } = await crearPerfilDesdeMetadata(user);
+      if (error) {
+        console.error("Error creando el perfil tras confirmar correo:", error);
+      }
+      fila = perfil;
+    }
 
     setUsuario(user);
     setRol(fila?.rol || null);

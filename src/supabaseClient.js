@@ -60,23 +60,19 @@ export function formatearCedula(valor) {
 }
 
 /**
- * Verifica si ya existe un usuario con ese correo en la tabla `usuarios`.
- */
-export async function correoYaRegistrado(email) {
-  const { data } = await supabase
-    .from("usuarios")
-    .select("id")
-    .ilike("email", email)
-    .maybeSingle();
-  return !!data;
-}
-
-/**
- * Registro por correo/contraseña para coach o admin.
- * rol: "coach" | "admin"
- * Si rol === "admin", `codigoAdmin` debe coincidir con ADMIN_CODE.
- * telefono/tipoDocumento/documento/direccion son obligatorios para coach
- * (la validación de formato ya se hizo en el formulario antes de llamar esto).
+ * PASO 1 del registro: crea el usuario en Supabase Auth y envía el
+ * correo de confirmación. NO crea todavía la fila en `usuarios` — sin
+ * sesión activa (el correo aún no está confirmado), la política de RLS
+ * de `usuarios_insert_propio` (auth.uid() = id) bloquearía el insert.
+ *
+ * Todos los datos del formulario se guardan en `user_metadata`, que
+ * queda asociado al usuario de Auth independientemente de si confirma
+ * el correo hoy o en una semana, y se recuperan en el PASO 2.
+ *
+ * El error "ya está registrado" lo entrega el propio signUp de Supabase
+ * (auth.users es la fuente de verdad), no hace falta un pre-chequeo
+ * aparte — un pre-chequeo contra `usuarios` con el cliente anónimo no
+ * funcionaría de todas formas: RLS bloquea esa lectura sin sesión.
  */
 export async function registrarConCorreo({
   nombre, apellido, email, password, rol, codigoAdmin,
@@ -86,43 +82,71 @@ export async function registrarConCorreo({
     return { error: { message: "El código de administrador no es válido" } };
   }
 
-  const yaExiste = await correoYaRegistrado(email);
-  if (yaExiste) {
-    return { error: { message: "Este correo ya está registrado en el sistema" } };
+  const metadata = {
+    full_name: `${nombre} ${apellido || ""}`.trim(),
+    nombre,
+    apellido: apellido || "",
+    rol,
+  };
+  if (rol === "coach") {
+    metadata.codigo = generarCodigoCoach();
+    metadata.telefono = telefono || null;
+    metadata.tipo_documento = tipoDocumento || null;
+    metadata.documento = documento || null;
+    metadata.direccion = direccion || null;
   }
 
   const { data, error } = await supabase.auth.signUp({
     email,
     password,
-    options: { data: { full_name: `${nombre} ${apellido || ""}`.trim() } },
+    options: {
+      emailRedirectTo: window.location.origin,
+      data: metadata,
+    },
   });
-  if (error) return { error };
 
-  const userId = data.user?.id;
-  if (!userId) return { error: { message: "No se pudo crear la cuenta" } };
+  return { data, error };
+}
+
+/**
+ * PASO 2 del registro: se llama desde App.jsx apenas se detecta una
+ * sesión activa (la persona ya confirmó su correo y volvió a la app).
+ * Si todavía no existe su fila en `usuarios`, la crea leyendo los datos
+ * que quedaron guardados en user_metadata durante el signUp.
+ */
+export async function crearPerfilDesdeMetadata(user) {
+  const meta = user.user_metadata || {};
+  const rol = meta.rol || "coach";
 
   const filaUsuario = {
-    id: userId,
-    nombre,
-    apellido: apellido || "",
-    email,
+    id: user.id,
+    nombre: meta.nombre || "Usuario",
+    apellido: meta.apellido || "",
+    email: user.email,
     rol,
     estado: rol === "admin" ? "activo" : "pendiente",
   };
   if (rol === "coach") {
-    filaUsuario.codigo = generarCodigoCoach();
-    filaUsuario.telefono = telefono || null;
-    filaUsuario.tipo_documento = tipoDocumento || null;
-    filaUsuario.documento = documento || null;
-    filaUsuario.direccion = direccion || null;
+    filaUsuario.codigo = meta.codigo || null;
+    filaUsuario.telefono = meta.telefono || null;
+    filaUsuario.tipo_documento = meta.tipo_documento || null;
+    filaUsuario.documento = meta.documento || null;
+    filaUsuario.direccion = meta.direccion || null;
   }
 
-  const { error: errorPerfil } = await supabase.from("usuarios").insert(filaUsuario);
-  return { data, error: errorPerfil };
+  const { data, error } = await supabase
+    .from("usuarios")
+    .insert(filaUsuario)
+    .select()
+    .single();
+
+  return { perfil: data, error };
 }
 
 /**
  * Login por correo y contraseña. Sirve tanto para admin como para coach.
+ * Si el correo aún no fue confirmado, Supabase devuelve un error propio
+ * ("Email not confirmed").
  */
 export async function iniciarSesionConCorreo(email, password) {
   return supabase.auth.signInWithPassword({ email, password });

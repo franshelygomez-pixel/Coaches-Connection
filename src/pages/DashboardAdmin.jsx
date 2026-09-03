@@ -250,6 +250,34 @@ export default function DashboardAdmin({ seccion, setSeccion }) {
                 </span>
               </div>
             </div>
+
+            {/* Datos personales del entrenador */}
+            <div style={{
+              background: "#F5F5F5", borderRadius: "10px", padding: "14px 16px",
+              marginBottom: "16px", display: "flex", flexDirection: "column", gap: "8px", fontSize: "13px"
+            }}>
+              <div>
+                <p style={{ margin: "0 0 2px", color: "#888", fontSize: "10px", textTransform: "uppercase", fontWeight: "700" }}>Teléfono</p>
+                <p style={{ margin: 0, fontWeight: "700", color: "#0B0B0B" }}>{coach.telefono || "No registrado"}</p>
+              </div>
+              <div>
+                <p style={{ margin: "0 0 2px", color: "#888", fontSize: "10px", textTransform: "uppercase", fontWeight: "700" }}>
+                  {coach.tipo_documento === "pasaporte" ? "Pasaporte" : "Cédula"}
+                </p>
+                <p style={{ margin: 0, fontWeight: "700", color: "#0B0B0B" }}>{coach.documento || "No registrado"}</p>
+              </div>
+              <div>
+                <p style={{ margin: "0 0 2px", color: "#888", fontSize: "10px", textTransform: "uppercase", fontWeight: "700" }}>Dirección</p>
+                <p style={{ margin: 0, fontWeight: "700", color: "#0B0B0B" }}>{coach.direccion || "No registrada"}</p>
+              </div>
+              {coach.codigo && (
+                <div>
+                  <p style={{ margin: "0 0 2px", color: "#888", fontSize: "10px", textTransform: "uppercase", fontWeight: "700" }}>Código de entrenador</p>
+                  <p style={{ margin: 0, fontWeight: "700", color: "#0B0B0B" }}>{coach.codigo}</p>
+                </div>
+              )}
+            </div>
+
             <div style={{ display: "flex", gap: "8px" }}>
               {coach.estado === "activo" && (
                 <button onClick={() => cambiarEstadoCoach(coach.id, "inactivo")}
@@ -520,17 +548,17 @@ export default function DashboardAdmin({ seccion, setSeccion }) {
           ) : (
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: "16px" }}>
               {topCoaches.map((c, i) => (
-                <div key={c.id} style={{ background: i === 0 ? "#0B0B0B" : "#F5F5F5", borderRadius: "12px", padding: "20px" }}>
-                  <p style={{ fontSize: "11px", fontWeight: "700", color: i === 0 ? "#FFC800" : "#888", marginBottom: "8px" }}>
-                    #{i + 1} ENTRENADOR
-                  </p>
-                  <p style={{ fontSize: "16px", fontWeight: "900", color: i === 0 ? "#FFFFFF" : "#0B0B0B", margin: "0 0 4px" }}>
-                    {c.nombre} {c.apellido}
-                  </p>
-                  <p style={{ fontSize: "28px", fontWeight: "900", color: "#FFC800", margin: 0 }}>{c.totalClientes}</p>
-                  <p style={{ fontSize: "12px", color: i === 0 ? "#888" : "#555", margin: "4px 0 0" }}>clientes asignados</p>
-                </div>
-              ))}
+  <div key={c.id} style={{ background: "#F5F5F5", borderRadius: "12px", padding: "20px" }}>
+    <p style={{ fontSize: "11px", fontWeight: "700", color: "#888", marginBottom: "8px" }}>
+      #{i + 1} ENTRENADOR
+    </p>
+    <p style={{ fontSize: "16px", fontWeight: "900", color: "#0B0B0B", margin: "0 0 4px" }}>
+      {c.nombre} {c.apellido}
+    </p>
+    <p style={{ fontSize: "28px", fontWeight: "900", color: "#FFC800", margin: 0 }}>{c.totalClientes}</p>
+    <p style={{ fontSize: "12px", color: "#555", margin: "4px 0 0" }}>clientes asignados</p>
+  </div>
+))}
             </div>
           )}
         </div>
@@ -592,7 +620,7 @@ export default function DashboardAdmin({ seccion, setSeccion }) {
           <div style={{ maxWidth: "480px" }}>
             <button onClick={() => setCoachSeleccionado(null)} style={{
               background: "none", border: "none", cursor: "pointer", color: "#888", fontSize: "13px", marginBottom: "24px"
-            }}>Volver</button>
+            }}>← Volver</button>
             <div style={estiloCard}>
               <div style={{ display: "flex", alignItems: "center", gap: "16px", marginBottom: "20px" }}>
                 <div style={{
@@ -612,6 +640,33 @@ export default function DashboardAdmin({ seccion, setSeccion }) {
                   </p>
                 </div>
               </div>
+
+              <div style={{
+                background: "#F5F5F5", borderRadius: "10px", padding: "14px 16px",
+                marginBottom: "20px", display: "flex", flexDirection: "column", gap: "8px", fontSize: "13px"
+              }}>
+                <div>
+                  <p style={{ margin: "0 0 2px", color: "#888", fontSize: "10px", textTransform: "uppercase", fontWeight: "700" }}>Teléfono</p>
+                  <p style={{ margin: 0, fontWeight: "700", color: "#0B0B0B" }}>{coachSeleccionado.telefono || "No registrado"}</p>
+                </div>
+                <div>
+                  <p style={{ margin: "0 0 2px", color: "#888", fontSize: "10px", textTransform: "uppercase", fontWeight: "700" }}>
+                    {coachSeleccionado.tipo_documento === "pasaporte" ? "Pasaporte" : "Cédula"}
+                  </p>
+                  <p style={{ margin: 0, fontWeight: "700", color: "#0B0B0B" }}>{coachSeleccionado.documento || "No registrado"}</p>
+                </div>
+                <div>
+                  <p style={{ margin: "0 0 2px", color: "#888", fontSize: "10px", textTransform: "uppercase", fontWeight: "700" }}>Dirección</p>
+                  <p style={{ margin: 0, fontWeight: "700", color: "#0B0B0B" }}>{coachSeleccionado.direccion || "No registrada"}</p>
+                </div>
+                {coachSeleccionado.codigo && (
+                  <div>
+                    <p style={{ margin: "0 0 2px", color: "#888", fontSize: "10px", textTransform: "uppercase", fontWeight: "700" }}>Código de entrenador</p>
+                    <p style={{ margin: 0, fontWeight: "700", color: "#0B0B0B" }}>{coachSeleccionado.codigo}</p>
+                  </div>
+                )}
+              </div>
+
               <div style={{ display: "flex", gap: "10px" }}>
                 <button onClick={() => cambiarEstadoCoach(coachSeleccionado.id, "activo")} style={estiloBoton("#FFC800", "#0B0B0B")}>Aprobar</button>
                 <button onClick={() => cambiarEstadoCoach(coachSeleccionado.id, "rechazado")} style={estiloBoton("#F5F5F5", "#CC0000")}>Rechazar</button>
@@ -652,7 +707,7 @@ export default function DashboardAdmin({ seccion, setSeccion }) {
                       <p style={{ fontSize: "12px", color: "#888", margin: "2px 0 0" }}>{c.email}</p>
                     </div>
                   </div>
-                  <span style={{ fontSize: "12px", color: "#888" }}>Ver perfil </span>
+                  <span style={{ fontSize: "12px", color: "#888" }}>Ver perfil →</span>
                 </div>
               </div>
             ))}
