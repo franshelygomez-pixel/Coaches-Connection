@@ -1,12 +1,37 @@
 import { createClient } from "@supabase/supabase-js";
+import { normalizarCorreo } from "./utils/validaciones";
+import { normalizarRol } from "./utils/permisos";
 
-// ============================================================
-// Variables de entorno (Vite): crea un archivo .env en la raíz
-// VITE_SUPABASE_URL=https://xxxxx.supabase.co
-// VITE_SUPABASE_ANON_KEY=xxxxx
-// ============================================================
-const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
-const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
+export { formatearCedula, validarCedulaDominicana } from "./utils/validaciones";
+
+const MODO_PRUEBA = import.meta.env.MODE === "test";
+const URL_CONFIGURADA = import.meta.env.VITE_SUPABASE_URL || "";
+const CLAVE_CONFIGURADA = import.meta.env.VITE_SUPABASE_ANON_KEY || "";
+export const VERSION_BACKEND_REQUERIDA = "1.4.0";
+
+export function validarConfiguracionSupabase(url, clave) {
+  const urlLimpia = `${url || ""}`.trim();
+  const claveLimpia = `${clave || ""}`.trim();
+  if (!urlLimpia || !claveLimpia || /tu-proyecto|tu_clave|pendiente/i.test(`${urlLimpia} ${claveLimpia}`)) {
+    return false;
+  }
+  try {
+    const direccion = new URL(urlLimpia);
+    return ["http:", "https:"].includes(direccion.protocol) && Boolean(direccion.hostname) && claveLimpia.length >= 20;
+  } catch {
+    return false;
+  }
+}
+
+export const CONFIGURACION_SUPABASE_VALIDA = MODO_PRUEBA
+  || validarConfiguracionSupabase(URL_CONFIGURADA, CLAVE_CONFIGURADA);
+
+const SUPABASE_URL = CONFIGURACION_SUPABASE_VALIDA
+  ? (URL_CONFIGURADA || "https://pruebas.supabase.co")
+  : "https://configuracion-pendiente.supabase.co";
+const SUPABASE_ANON_KEY = CONFIGURACION_SUPABASE_VALIDA
+  ? (CLAVE_CONFIGURADA || "clave-publica-de-pruebas")
+  : "clave-publica-pendiente-fase-seis";
 
 export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
   auth: {
@@ -16,138 +41,268 @@ export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
   },
 });
 
-export const ADMIN_CODE = "SF-ADMIN-2026";
+const CAMPOS_PERFIL = [
+  "id", "nombre", "apellido", "email", "rol", "estado", "codigo",
+  "creado_en", "telefono", "tipo_documento", "documento", "direccion",
+].join(",");
 
-function generarCodigoCoach() {
-  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-  let codigo = "COACH-";
-  for (let i = 0; i < 4; i++) codigo += chars[Math.floor(Math.random() * chars.length)];
-  return codigo;
+function generarCodigoUsuario(rol) {
+  const caracteres = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+  const bytes = new Uint8Array(6);
+  crypto.getRandomValues(bytes);
+  const sufijo = Array.from(bytes, (valor) => caracteres[valor % caracteres.length]).join("");
+  return `${rol === "admin" ? "ADMIN" : "COACH"}-${sufijo}`;
 }
 
-/**
- * Valida el dígito verificador real de una cédula dominicana (11 dígitos).
- * Algoritmo público usado por la cédula de identidad dominicana (la JCE
- * no ofrece una API pública para consultarla). Detecta cédulas mal
- * escritas o inventadas; no confirma que la persona exista en el
- * registro civil.
- */
-export function validarCedulaDominicana(cedula) {
-  const limpio = (cedula || "").replace(/\D/g, "");
-  if (limpio.length !== 11) return false;
+export function traducirErrorSupabase(error, contexto = "operacion") {
+  const mensaje = `${error?.message || ""}`.toLowerCase();
+  const codigo = `${error?.code || ""}`.toLowerCase();
 
-  const pesos = [1, 2, 1, 2, 1, 2, 1, 2, 1, 2];
-  let suma = 0;
-  for (let i = 0; i < 10; i++) {
-    let producto = parseInt(limpio[i], 10) * pesos[i];
-    if (producto >= 10) producto -= 9;
-    suma += producto;
+  if (codigo === "backend_not_configured" || mensaje.includes("estado_backend")) {
+    return "Supabase no tiene instalada la configuración requerida. Ejecuta completo supabase/setup.sql.";
   }
-  const digitoVerificador = (10 - (suma % 10)) % 10;
-  return digitoVerificador === parseInt(limpio[10], 10);
+  if (codigo === "backend_outdated") {
+    return "La base de datos necesita la Fase 4. Ejecuta supabase/fase4_reportes_notificaciones.sql.";
+  }
+  if (codigo === "42702" || mensaje.includes("ambiguous") || mensaje.includes("vence_en is ambiguous")) {
+    return "La función de invitaciones necesita la corrección 1.3.1. Ejecuta supabase/correccion_fase3_invitaciones.sql.";
+  }
+  if (codigo === "pgrst202" || (mensaje.includes("crear_invitacion_cliente") && mensaje.includes("schema cache"))) {
+    return "Supabase no encuentra la función de invitaciones. Ejecuta supabase/correccion_fase3_invitaciones.sql.";
+  }
+  if (mensaje.includes("reporte_resumen_operativo") || mensaje.includes("reporte_sesiones_paginado") || mensaje.includes("notificaciones") && mensaje.includes("schema cache")) {
+    return "Supabase no tiene instalada la Fase 4. Ejecuta supabase/fase4_reportes_notificaciones.sql.";
+  }
+  if (mensaje.includes("solo un entrenador activo")) {
+    return "Tu cuenta debe tener el rol COACH y el estado ACTIVO para generar invitaciones.";
+  }
+  if (mensaje.includes("no pertenece al entrenador")) {
+    return "Ese cliente no está asignado a la cuenta del entrenador que inició sesión.";
+  }
+  if (mensaje.includes("no tiene un correo valido")) {
+    return "El cliente necesita un correo electrónico válido antes de generar la invitación.";
+  }
+  if (mensaje.includes("ya tiene acceso al portal")) {
+    return "El cliente ya tiene una cuenta de acceso al portal.";
+  }
+  if (codigo === "invalid_admin_invitation" || mensaje.includes("invitacion_admin_invalida")) {
+    return "La invitación administrativa no es válida, no corresponde al correo o ya venció.";
+  }
+  if (codigo === "invalid_client_invitation" || mensaje.includes("invitacion_cliente_invalida")) {
+    return "La invitación del cliente no es válida, no corresponde al correo o ya venció.";
+  }
+  if (mensaje.includes("invalid login credentials")) return "Correo o contraseña incorrectos.";
+  if (mensaje.includes("email not confirmed")) return "Debes confirmar tu correo antes de iniciar sesión.";
+  if (mensaje.includes("user already registered") || mensaje.includes("already") || codigo === "23505") {
+    return "El correo o documento ya está registrado.";
+  }
+  if (mensaje.includes("password")) return "La contraseña no cumple los requisitos de seguridad.";
+  if (mensaje.includes("rate limit") || error?.status === 429) return "Se realizaron demasiados intentos. Espera unos minutos.";
+  if (mensaje.includes("row-level security") || mensaje.includes("permission denied") || codigo === "42501") {
+    return "La base de datos rechazó la operación. Ejecuta el archivo supabase/setup.sql.";
+  }
+  if (mensaje.includes("failed to fetch") || mensaje.includes("network")) return "No se pudo conectar con Supabase.";
+  if (contexto === "registro") return "No se pudo crear la solicitud. Revisa la configuración de Supabase.";
+  if (contexto === "perfil") return "No se pudo cargar tu perfil de usuario.";
+  return "No se pudo completar la operación.";
 }
 
-/** Formatea una cédula mientras se escribe: 001-1234567-8 */
-export function formatearCedula(valor) {
-  const limpio = (valor || "").replace(/\D/g, "").slice(0, 11);
-  const p1 = limpio.slice(0, 3);
-  const p2 = limpio.slice(3, 10);
-  const p3 = limpio.slice(10, 11);
-  let resultado = p1;
-  if (p2) resultado += `-${p2}`;
-  if (p3) resultado += `-${p3}`;
-  return resultado;
+export function versionCumple(actual, requerida = VERSION_BACKEND_REQUERIDA) {
+  const convertir = (version) => `${version || ""}`.split(".").map((parte) => Number(parte) || 0);
+  const a = convertir(actual);
+  const r = convertir(requerida);
+  const longitud = Math.max(a.length, r.length);
+  for (let indice = 0; indice < longitud; indice += 1) {
+    if ((a[indice] || 0) > (r[indice] || 0)) return true;
+    if ((a[indice] || 0) < (r[indice] || 0)) return false;
+  }
+  return true;
 }
 
-/**
- * PASO 1 del registro: crea el usuario en Supabase Auth y envía el
- * correo de confirmación. NO crea todavía la fila en `usuarios` — sin
- * sesión activa (el correo aún no está confirmado), la política de RLS
- * de `usuarios_insert_propio` (auth.uid() = id) bloquearía el insert.
- *
- * Todos los datos del formulario se guardan en `user_metadata`, que
- * queda asociado al usuario de Auth independientemente de si confirma
- * el correo hoy o en una semana, y se recuperan en el PASO 2.
- *
- * El error "ya está registrado" lo entrega el propio signUp de Supabase
- * (auth.users es la fuente de verdad), no hace falta un pre-chequeo
- * aparte — un pre-chequeo contra `usuarios` con el cliente anónimo no
- * funcionaría de todas formas: RLS bloquea esa lectura sin sesión.
- */
+export async function verificarConfiguracionBackend() {
+  const { data, error } = await supabase.rpc("estado_backend");
+
+  if (error || !data?.configurado) {
+    return {
+      data: null,
+      error: {
+        message: error?.message || "Backend not configured",
+        code: "backend_not_configured",
+        cause: error || null,
+      },
+    };
+  }
+
+  if (!versionCumple(data.version)) {
+    return {
+      data: null,
+      error: {
+        message: `Backend ${data.version || "sin versión"}; se requiere ${VERSION_BACKEND_REQUERIDA}`,
+        code: "backend_outdated",
+      },
+    };
+  }
+
+  return { data, error: null };
+}
+
+async function consultarPerfil(userId) {
+  return supabase
+    .from("usuarios")
+    .select(CAMPOS_PERFIL)
+    .eq("id", userId)
+    .maybeSingle();
+}
+
+async function consultarPerfilCliente() {
+  const { data, error } = await supabase.rpc("obtener_mi_perfil_cliente");
+  return { data: data || null, error };
+}
+
+export async function obtenerOCrearPerfil(user) {
+  if (!user?.id) {
+    return { data: null, error: { message: "Usuario no válido" } };
+  }
+
+  const perfilExistente = await consultarPerfil(user.id);
+  if (perfilExistente.error || perfilExistente.data) return perfilExistente;
+
+  const perfilCliente = await consultarPerfilCliente();
+  if (perfilCliente.data) return perfilCliente;
+  if (perfilCliente.error) return perfilCliente;
+
+  // Repara las cuentas creadas antes de instalar el trigger de setup.sql.
+  const { error: errorReparacion } = await supabase.rpc("reparar_mi_perfil");
+  if (errorReparacion) return { data: null, error: errorReparacion };
+  const perfilReparado = await consultarPerfil(user.id);
+  if (perfilReparado.error || perfilReparado.data) return perfilReparado;
+  return consultarPerfilCliente();
+}
+
 export async function registrarConCorreo({
-  nombre, apellido, email, password, rol, codigoAdmin,
-  telefono, tipoDocumento, documento, direccion,
+  nombre,
+  apellido,
+  email,
+  password,
+  rol,
+  telefono,
+  tipoDocumento,
+  documento,
+  direccion,
+  codigoInvitacionAdmin,
+  codigoInvitacionCliente,
 }) {
-  if (rol === "admin" && codigoAdmin !== ADMIN_CODE) {
-    return { error: { message: "El código de administrador no es válido" } };
+  // Evita crear una cuenta solamente en Authentication cuando el esquema,
+  // el trigger o la funcion de perfiles todavia no han sido instalados.
+  const diagnostico = await verificarConfiguracionBackend();
+  if (diagnostico.error) return diagnostico;
+
+  const correoNormalizado = normalizarCorreo(email);
+  const rolNormalizado = normalizarRol(rol);
+  if (!rolNormalizado) {
+    return { data: null, error: { message: "Rol no permitido", code: "invalid_role" } };
   }
 
-  const metadata = {
-    full_name: `${nombre} ${apellido || ""}`.trim(),
-    nombre,
-    apellido: apellido || "",
-    rol,
-  };
-  if (rol === "coach") {
-    metadata.codigo = generarCodigoCoach();
-    metadata.telefono = telefono || null;
-    metadata.tipo_documento = tipoDocumento || null;
-    metadata.documento = documento || null;
-    metadata.direccion = direccion || null;
+
+  if (rolNormalizado === "admin") {
+    const { data: invitacionValida, error: errorInvitacion } = await supabase.rpc(
+      "validar_invitacion_admin",
+      {
+        p_email: correoNormalizado,
+        p_codigo: codigoInvitacionAdmin?.trim() || "",
+      }
+    );
+    if (errorInvitacion || !invitacionValida) {
+      return {
+        data: null,
+        error: {
+          message: errorInvitacion?.message || "INVITACION_ADMIN_INVALIDA",
+          code: "invalid_admin_invitation",
+        },
+      };
+    }
   }
+
+  if (rolNormalizado === "cliente") {
+    const { data: invitacionValida, error: errorInvitacion } = await supabase.rpc(
+      "validar_invitacion_cliente",
+      {
+        p_email: correoNormalizado,
+        p_codigo: codigoInvitacionCliente?.trim() || "",
+      }
+    );
+    if (errorInvitacion || !invitacionValida) {
+      return {
+        data: null,
+        error: {
+          message: errorInvitacion?.message || "INVITACION_CLIENTE_INVALIDA",
+          code: "invalid_client_invitation",
+        },
+      };
+    }
+  }
+
+  const perfilAplicacion = {
+    nombre: nombre?.trim() || "",
+    apellido: apellido?.trim() || "",
+    email: correoNormalizado,
+    rol: rolNormalizado,
+    codigo: rolNormalizado === "cliente" ? null : generarCodigoUsuario(rolNormalizado),
+    telefono: telefono || null,
+    tipo_documento: tipoDocumento || null,
+    documento: documento || null,
+    direccion: direccion?.trim() || null,
+    codigo_invitacion_admin: rolNormalizado === "admin"
+      ? codigoInvitacionAdmin?.trim().toUpperCase() || null
+      : null,
+    codigo_invitacion_cliente: rolNormalizado === "cliente"
+      ? codigoInvitacionCliente?.trim().toUpperCase() || null
+      : null,
+  };
 
   const { data, error } = await supabase.auth.signUp({
-    email,
+    email: correoNormalizado,
     password,
     options: {
-      emailRedirectTo: window.location.origin,
-      data: metadata,
+      data: {
+        full_name: `${nombre || "Cliente"} ${apellido || ""}`.trim(),
+        perfil_aplicacion: perfilAplicacion,
+      },
     },
   });
 
-  return { data, error };
-}
+  if (error) return { data: null, error };
 
-/**
- * PASO 2 del registro: se llama desde App.jsx apenas se detecta una
- * sesión activa (la persona ya confirmó su correo y volvió a la app).
- * Si todavía no existe su fila en `usuarios`, la crea leyendo los datos
- * que quedaron guardados en user_metadata durante el signUp.
- */
-export async function crearPerfilDesdeMetadata(user) {
-  const meta = user.user_metadata || {};
-  const rol = meta.rol || "coach";
-
-  const filaUsuario = {
-    id: user.id,
-    nombre: meta.nombre || "Usuario",
-    apellido: meta.apellido || "",
-    email: user.email,
-    rol,
-    estado: rol === "admin" ? "activo" : "pendiente",
-  };
-  if (rol === "coach") {
-    filaUsuario.codigo = meta.codigo || null;
-    filaUsuario.telefono = meta.telefono || null;
-    filaUsuario.tipo_documento = meta.tipo_documento || null;
-    filaUsuario.documento = meta.documento || null;
-    filaUsuario.direccion = meta.direccion || null;
+  if (!data.user?.id || data.user.identities?.length === 0) {
+    return {
+      data: null,
+      error: { message: "User already registered", code: "user_already_exists" },
+    };
   }
 
-  const { data, error } = await supabase
-    .from("usuarios")
-    .insert(filaUsuario)
-    .select()
-    .single();
-
-  return { perfil: data, error };
+  return { data, error: null };
 }
 
-/**
- * Login por correo y contraseña. Sirve tanto para admin como para coach.
- * Si el correo aún no fue confirmado, Supabase devuelve un error propio
- * ("Email not confirmed").
- */
 export async function iniciarSesionConCorreo(email, password) {
-  return supabase.auth.signInWithPassword({ email, password });
+  const diagnostico = await verificarConfiguracionBackend();
+  if (diagnostico.error) return diagnostico;
+
+  return supabase.auth.signInWithPassword({
+    email: normalizarCorreo(email),
+    password,
+  });
+}
+
+export async function enviarRecuperacionContrasena(email) {
+  return supabase.auth.resetPasswordForEmail(normalizarCorreo(email), {
+    redirectTo: window.location.origin,
+  });
+}
+
+export async function actualizarContrasena(password) {
+  return supabase.auth.updateUser({ password });
+}
+
+export async function cerrarSesion() {
+  return supabase.auth.signOut();
 }

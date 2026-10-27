@@ -1,134 +1,247 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { supabase } from "../supabaseClient";
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip } from "recharts";
+import Paginacion from "../components/Paginacion";
+import SeguridadAdmin from "../components/admin/SeguridadAdmin";
+import useDebounce from "../hooks/useDebounce";
+import { normalizarCorreo } from "../utils/validaciones";
+import ModalInvitacion from "../components/admin/ModalInvitacion";
+import Aviso from "../components/Aviso";
+
+const CLIENTES_ADMIN_POR_PAGINA = 25;
 
 export default function DashboardAdmin({ seccion, setSeccion }) {
   const [pendientes, setPendientes] = useState([]);
+  const [rechazados, setRechazados] = useState([]);
   const [activos, setActivos] = useState([]);
   const [inactivos, setInactivos] = useState([]);
   const [clientes, setClientes] = useState([]);
   const [cargando, setCargando] = useState(true);
+  const [errorCarga, setErrorCarga] = useState("");
   const [coachSeleccionado, setCoachSeleccionado] = useState(null);
   const [clienteSeleccionado, setClienteSeleccionado] = useState(null);
   const [mostrarFormCliente, setMostrarFormCliente] = useState(false);
   const [formCliente, setFormCliente] = useState({ nombre: "", apellido: "", email: "", telefono: "", coachId: "" });
   const [errorForm, setErrorForm] = useState("");
+  const [mostrarInvitar, setMostrarInvitar] = useState(false);
+  const [avisoInvitacion, setAvisoInvitacion] = useState({ tipo: "", texto: "" });
 
-  const [busquedaSol, setBusquedaSol] = useState("");
-  const [seleccionados, setSeleccionados] = useState([]);
   const [busquedaEnt, setBusquedaEnt] = useState("");
+  const [filtroEnt, setFiltroEnt] = useState("todos");
+  const [busquedaClientes, setBusquedaClientes] = useState("");
+  const busquedaClientesEstable = useDebounce(busquedaClientes, 350);
+  const [paginaClientes, setPaginaClientes] = useState(1);
 
   // --- Historial de mediciones (ficha antropométrica) para el modal de Clientes ---
   const [clienteHistorial, setClienteHistorial] = useState(null);
   const [medicionesHistorial, setMedicionesHistorial] = useState([]);
   const [cargandoHistorial, setCargandoHistorial] = useState(false);
 
-  const cargarCoaches = async () => {
-    const { data, error } = await supabase.from("usuarios").select("*").eq("rol", "coach");
-    if (error) { console.error(error); return; }
-    const coaches = data || [];
-    setPendientes(coaches.filter((c) => c.estado === "pendiente"));
-    setActivos(coaches.filter((c) => c.estado === "activo"));
-    setInactivos(coaches.filter((c) => c.estado === "inactivo"));
-  };
+  const cargarCoaches = useCallback(async () => {
+    const { data, error } = await supabase
+      .from("usuarios")
+      .select("id,nombre,apellido,email,rol,rol_solicitado,estado,codigo,creado_en,telefono,tipo_documento,documento,direccion,aprobado_por,decision_en,motivo_decision")
+      .in("rol", ["coach", "admin"]);
+    if (error) {
+      console.error(error);
+      setErrorCarga("No se pudieron cargar los entrenadores.");
+      return;
+    }
+    const usuarios = data || [];
+    setPendientes(usuarios.filter((usuario) => usuario.estado === "pendiente"));
+    setRechazados(usuarios.filter((usuario) => usuario.estado === "rechazado"));
+    setActivos(usuarios.filter((usuario) => usuario.rol === "coach" && usuario.estado === "activo"));
+    setInactivos(usuarios.filter((usuario) => usuario.rol === "coach" && usuario.estado === "inactivo"));
+  }, []);
 
-  const cargarClientes = async () => {
-    const { data, error } = await supabase.from("clientes").select("*");
-    if (error) { console.error(error); return; }
+  const cargarClientes = useCallback(async () => {
+    const { data, error } = await supabase
+      .from("clientes")
+      .select("id,nombre,apellido,email,telefono,coach_id,estado,creado_en")
+      .order("nombre", { ascending: true });
+    if (error) {
+      console.error(error);
+      setErrorCarga("No se pudieron cargar los clientes.");
+      return;
+    }
     setClientes(data || []);
-  };
+  }, []);
 
-  const cargar = async () => {
+  const cargar = useCallback(async () => {
     setCargando(true);
-    await cargarCoaches();
-    await cargarClientes();
+    setErrorCarga("");
+    if (seccion === "Entrenadores") {
+      await Promise.all([cargarCoaches(), cargarClientes()]);
+    } else {
+      await cargarCoaches();
+      setClientes([]);
+    }
     setCargando(false);
-  };
+  }, [cargarClientes, cargarCoaches, seccion]);
 
-  useEffect(() => { cargar(); }, [seccion]);
+  useEffect(() => {
+    const temporizador = window.setTimeout(() => {
+      void cargar();
+    }, 0);
 
-  const cambiarEstadoCoach = async (coachId, nuevoEstado) => {
-    const { error } = await supabase.from("usuarios").update({ estado: nuevoEstado }).eq("id", coachId);
-    if (error) console.error(error);
+    const canalClientes = supabase
+      .channel("admin-clientes")
+      .on("postgres_changes", { event: "*", schema: "public", table: "clientes" }, () => {
+        if (seccion === "Entrenadores") void cargarClientes();
+      })
+      .subscribe();
+
+    const canalUsuarios = supabase
+      .channel("admin-usuarios")
+      .on("postgres_changes", { event: "*", schema: "public", table: "usuarios" }, () => void cargarCoaches())
+      .subscribe();
+
+    return () => {
+      window.clearTimeout(temporizador);
+      void supabase.removeChannel(canalClientes);
+      void supabase.removeChannel(canalUsuarios);
+    };
+  }, [cargar, cargarClientes, cargarCoaches, seccion]);
+
+  const cambiarEstadoCoach = async (usuarioId, nuevoEstado) => {
+    setErrorCarga("");
+    const cuentas = [...pendientes, ...rechazados, ...activos, ...inactivos];
+    const cuenta = cuentas.find((usuario) => usuario.id === usuarioId);
+    let respuesta;
+
+    if (cuenta?.estado === "pendiente" && nuevoEstado === "activo") {
+      respuesta = await supabase.rpc("resolver_solicitud", {
+        p_usuario_id: usuarioId,
+        p_decision: "aprobar",
+        p_motivo: "Aprobación desde el panel administrativo",
+      });
+    } else if (cuenta?.estado === "pendiente" && nuevoEstado === "rechazado") {
+      const motivo = window.prompt("Indica el motivo del rechazo:");
+      if (motivo === null) return;
+      if (motivo.trim().length < 3) {
+        setErrorCarga("El motivo del rechazo debe tener al menos 3 caracteres.");
+        return;
+      }
+      respuesta = await supabase.rpc("resolver_solicitud", {
+        p_usuario_id: usuarioId,
+        p_decision: "rechazar",
+        p_motivo: motivo.trim(),
+      });
+    } else if (cuenta?.estado === "rechazado" && nuevoEstado === "pendiente") {
+      respuesta = await supabase.rpc("resolver_solicitud", {
+        p_usuario_id: usuarioId,
+        p_decision: "reabrir",
+        p_motivo: "Solicitud reabierta desde el panel administrativo",
+      });
+    } else {
+      respuesta = await supabase.rpc("cambiar_estado_usuario", {
+        p_usuario_id: usuarioId,
+        p_estado: nuevoEstado,
+        p_motivo: "Cambio realizado desde el panel administrativo",
+      });
+    }
+
+    const { data, error } = respuesta;
+    if (error || data === null || data === false) {
+      console.error(error);
+      setErrorCarga("No se pudo cambiar el estado de la cuenta.");
+      return;
+    }
     setCoachSeleccionado(null);
-    cargarCoaches();
+    await cargarCoaches();
   };
 
   const guardarCliente = async () => {
     setErrorForm("");
 
-    if (!formCliente.nombre || !formCliente.email) {
+    const nombre = formCliente.nombre.trim();
+    const apellido = formCliente.apellido.trim();
+    const email = normalizarCorreo(formCliente.email);
+    const telefono = formCliente.telefono.replace(/\D/g, "");
+
+    if (!nombre || !email) {
       setErrorForm("Nombre y correo son obligatorios");
       return;
     }
 
     const soloLetras = /^[a-zA-ZáéíóúÁÉÍÓÚñÑ\s]+$/;
-    if (!soloLetras.test(formCliente.nombre)) {
+    if (!soloLetras.test(nombre)) {
       setErrorForm("El nombre solo puede contener letras");
       return;
     }
-    if (formCliente.apellido && !soloLetras.test(formCliente.apellido)) {
+    if (apellido && !soloLetras.test(apellido)) {
       setErrorForm("El apellido solo puede contener letras");
       return;
     }
 
     const formatoCorreo = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
-    if (!formatoCorreo.test(formCliente.email)) {
+    if (!formatoCorreo.test(email)) {
       setErrorForm("El formato del correo no es válido");
       return;
     }
 
-    if (formCliente.telefono && formCliente.telefono.length > 10) {
+    if (telefono.length > 10) {
       setErrorForm("El teléfono no puede tener más de 10 dígitos");
       return;
     }
 
-    // Verificar correo duplicado solo al crear, no al editar
-    if (!clienteSeleccionado) {
-      const { data: existentes } = await supabase
-        .from("clientes")
-        .select("id")
-        .ilike("email", formCliente.email);
-      if (existentes && existentes.length > 0) {
-        setErrorForm("Este correo ya está registrado para otro cliente");
-        return;
-      }
+    let consultaDuplicado = supabase.from("clientes").select("id").ilike("email", email).limit(1);
+    if (clienteSeleccionado) consultaDuplicado = consultaDuplicado.neq("id", clienteSeleccionado.id);
+    const { data: existentes, error: errorDuplicado } = await consultaDuplicado;
+    if (errorDuplicado) {
+      setErrorForm("No se pudo comprobar el correo del cliente.");
+      return;
+    }
+    if (existentes && existentes.length > 0) {
+      setErrorForm("Este correo ya está registrado para otro cliente");
+      return;
     }
 
     if (clienteSeleccionado) {
-      const { error } = await supabase
+      const { data, error } = await supabase
         .from("clientes")
         .update({
-          nombre: formCliente.nombre,
-          apellido: formCliente.apellido,
-          email: formCliente.email,
-          telefono: formCliente.telefono,
+          nombre,
+          apellido,
+          email,
+          telefono,
           coach_id: formCliente.coachId || null,
         })
-        .eq("id", clienteSeleccionado.id);
-      if (error) { setErrorForm("No se pudo actualizar el cliente."); return; }
+        .eq("id", clienteSeleccionado.id)
+        .select("id")
+        .maybeSingle();
+      if (error || !data) { setErrorForm("No se pudo actualizar el cliente."); return; }
     } else {
-      const { error } = await supabase.from("clientes").insert({
-        nombre: formCliente.nombre,
-        apellido: formCliente.apellido,
-        email: formCliente.email,
-        telefono: formCliente.telefono,
+      const { data, error } = await supabase.from("clientes").insert({
+        nombre,
+        apellido,
+        email,
+        telefono,
         coach_id: formCliente.coachId || null,
         estado: "Activo",
-      });
-      if (error) { setErrorForm("No se pudo crear el cliente."); return; }
+      }).select("id").single();
+      if (error || !data) { setErrorForm("No se pudo crear el cliente."); return; }
     }
 
     setMostrarFormCliente(false);
     setClienteSeleccionado(null);
     setFormCliente({ nombre: "", apellido: "", email: "", telefono: "", coachId: "" });
-    cargarClientes();
+    await cargarClientes();
   };
 
   const cambiarEstadoCliente = async (clienteId, nuevoEstado) => {
-    const { error } = await supabase.from("clientes").update({ estado: nuevoEstado }).eq("id", clienteId);
-    if (error) console.error(error);
-    cargarClientes();
+    setErrorCarga("");
+    const { data, error } = await supabase
+      .from("clientes")
+      .update({ estado: nuevoEstado })
+      .eq("id", clienteId)
+      .select("id")
+      .maybeSingle();
+    if (error || !data) {
+      console.error(error);
+      setErrorCarga("No se pudo cambiar el estado del cliente.");
+      return;
+    }
+    await cargarClientes();
   };
 
   // --- Ver historial antropométrico de un cliente (solo lectura) ---
@@ -158,17 +271,29 @@ export default function DashboardAdmin({ seccion, setSeccion }) {
 
   const clasificarIMC = (imc) => {
     if (imc == null) return { label: "--", bg: "#F5F5F5", color: "#888" };
-    if (imc < 18.5) return { label: "Bajo peso", bg: "#EAF2FB", color: "#2E5D9A" };
-    if (imc < 25) return { label: "Normal", bg: "#E1F5EE", color: "#085041" };
-    if (imc < 30) return { label: "Sobrepeso", bg: "#FFF8E1", color: "#B8860B" };
-    return { label: "Obesidad", bg: "#FDECEC", color: "#B02A2A" };
+    return { label: "Registrado", bg: "#F5F5F5", color: "#555" };
   };
+
+  if (seccion === "Administradores") {
+    return <SeguridadAdmin seccion={seccion} />;
+  }
 
   if (cargando) return (
     <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "200px" }}>
       <p style={{ color: "#888" }}>Cargando...</p>
     </div>
   );
+
+  if (errorCarga && clientes.length === 0 && pendientes.length === 0 && activos.length === 0) {
+    return (
+      <div role="alert" style={{ background: "#FFF", border: "1px solid #F3C4C4", borderRadius: "12px", padding: "32px", textAlign: "center" }}>
+        <p style={{ color: "#B02A2A", marginBottom: "16px" }}>{errorCarga}</p>
+        <button type="button" onClick={() => void cargar()} style={{ background: "#0B0B0B", color: "#FFFFFF", border: 0, borderRadius: "8px", cursor: "pointer", fontWeight: "800", padding: "11px 16px" }}>
+          Intentar nuevamente
+        </button>
+      </div>
+    );
+  }
 
   const estiloCard = {
     background: "#FFFFFF", border: "0.5px solid #E5E5E5",
@@ -187,20 +312,18 @@ export default function DashboardAdmin({ seccion, setSeccion }) {
     outline: "none", display: "block", background: "#FAFAFA"
   };
 
+  const avisoError = errorCarga && <Aviso tipo="error" onCerrar={() => setErrorCarga("")}>{errorCarga}</Aviso>;
+
   const fechaLegible = (isoString) =>
     isoString ? new Date(isoString).toLocaleDateString("es-DO") : "N/A";
 
   const CardCoach = ({ coach, onClick }) => (
-    <div onClick={onClick} style={{
-      ...estiloCard, display: "flex", alignItems: "center",
-      justifyContent: "space-between", cursor: "pointer",
-      marginBottom: "8px", transition: "border-color 0.15s"
-    }}>
+    <article style={{ alignItems: "center", background: "#FFFFFF", border: "0.5px solid #E5E5E5", borderRadius: "12px", display: "flex", flexWrap: "wrap", gap: "12px", justifyContent: "space-between", padding: "20px 24px" }}>
       <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
         <div style={{
           width: "40px", height: "40px", borderRadius: "50%", background: "#0B0B0B",
           display: "flex", alignItems: "center", justifyContent: "center",
-          color: "#FFC800", fontWeight: "900", fontSize: "14px", flexShrink: 0
+          color: "#FF5A64", fontWeight: "900", fontSize: "14px", flexShrink: 0
         }}>
           {coach.nombre?.[0]?.toUpperCase()}
         </div>
@@ -211,11 +334,16 @@ export default function DashboardAdmin({ seccion, setSeccion }) {
           <p style={{ fontSize: "12px", color: "#888", margin: "2px 0 0" }}>{coach.email}</p>
         </div>
       </div>
-      <span style={{ fontSize: "12px", color: "#888" }}>Ver </span>
-    </div>
+      <div style={{ alignItems: "center", display: "flex", flexWrap: "wrap", gap: "8px" }}>
+        <span style={{ background: coach.estado === "activo" ? "#E1F5EE" : "#F5F5F5", borderRadius: "20px", color: coach.estado === "activo" ? "#085041" : "#555", fontSize: "11px", fontWeight: "700", padding: "3px 10px" }}>
+          {coach.estado === "activo" ? "ACTIVO" : "INACTIVO"}
+        </span>
+        <button type="button" onClick={onClick} style={{ background: "#F5F5F5", border: "none", borderRadius: "8px", color: "#0B0B0B", cursor: "pointer", fontSize: "13px", fontWeight: "700", padding: "8px 16px" }}>Ver perfil</button>
+      </div>
+    </article>
   );
 
-  const PerfilCoach = ({ coach }) => {
+  const renderPerfilCoach = (coach) => {
     const clientesDelCoach = clientes.filter(c => c.coach_id === coach.id && c.estado === "Activo");
     return (
       <div>
@@ -231,7 +359,7 @@ export default function DashboardAdmin({ seccion, setSeccion }) {
               <div style={{
                 width: "56px", height: "56px", borderRadius: "50%", background: "#0B0B0B",
                 display: "flex", alignItems: "center", justifyContent: "center",
-                color: "#FFC800", fontWeight: "900", fontSize: "20px"
+                color: "#FF5A64", fontWeight: "900", fontSize: "20px"
               }}>
                 {coach.nombre?.[0]?.toUpperCase()}
               </div>
@@ -250,34 +378,6 @@ export default function DashboardAdmin({ seccion, setSeccion }) {
                 </span>
               </div>
             </div>
-
-            {/* Datos personales del entrenador */}
-            <div style={{
-              background: "#F5F5F5", borderRadius: "10px", padding: "14px 16px",
-              marginBottom: "16px", display: "flex", flexDirection: "column", gap: "8px", fontSize: "13px"
-            }}>
-              <div>
-                <p style={{ margin: "0 0 2px", color: "#888", fontSize: "10px", textTransform: "uppercase", fontWeight: "700" }}>Teléfono</p>
-                <p style={{ margin: 0, fontWeight: "700", color: "#0B0B0B" }}>{coach.telefono || "No registrado"}</p>
-              </div>
-              <div>
-                <p style={{ margin: "0 0 2px", color: "#888", fontSize: "10px", textTransform: "uppercase", fontWeight: "700" }}>
-                  {coach.tipo_documento === "pasaporte" ? "Pasaporte" : "Cédula"}
-                </p>
-                <p style={{ margin: 0, fontWeight: "700", color: "#0B0B0B" }}>{coach.documento || "No registrado"}</p>
-              </div>
-              <div>
-                <p style={{ margin: "0 0 2px", color: "#888", fontSize: "10px", textTransform: "uppercase", fontWeight: "700" }}>Dirección</p>
-                <p style={{ margin: 0, fontWeight: "700", color: "#0B0B0B" }}>{coach.direccion || "No registrada"}</p>
-              </div>
-              {coach.codigo && (
-                <div>
-                  <p style={{ margin: "0 0 2px", color: "#888", fontSize: "10px", textTransform: "uppercase", fontWeight: "700" }}>Código de entrenador</p>
-                  <p style={{ margin: 0, fontWeight: "700", color: "#0B0B0B" }}>{coach.codigo}</p>
-                </div>
-              )}
-            </div>
-
             <div style={{ display: "flex", gap: "8px" }}>
               {coach.estado === "activo" && (
                 <button onClick={() => cambiarEstadoCoach(coach.id, "inactivo")}
@@ -287,7 +387,7 @@ export default function DashboardAdmin({ seccion, setSeccion }) {
               )}
               {coach.estado === "inactivo" && (
                 <button onClick={() => cambiarEstadoCoach(coach.id, "activo")}
-                  style={estiloBoton("#FFC800", "#0B0B0B")}>
+                  style={estiloBoton("#0B0B0B", "#FFFFFF")}>
                   Activar
                 </button>
               )}
@@ -320,7 +420,7 @@ export default function DashboardAdmin({ seccion, setSeccion }) {
   };
 
   // --- Modal de solo lectura: historial de mediciones (ficha antropométrica) ---
-  const ModalHistorial = () => {
+  const renderModalHistorial = () => {
     if (!clienteHistorial) return null;
     return (
       <div style={{
@@ -371,7 +471,7 @@ export default function DashboardAdmin({ seccion, setSeccion }) {
                         IMC {m.imc ?? "--"} · {clasif.label}
                       </span>
                     </div>
-                    <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "8px", fontSize: "12px", color: "#555" }}>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: "8px", fontSize: "12px", color: "#555" }}>
                       <div>
                         <p style={{ margin: "0 0 2px", color: "#888", fontSize: "10px", textTransform: "uppercase" }}>Peso</p>
                         <p style={{ margin: 0, fontWeight: "700", color: "#0B0B0B" }}>{m.peso} kg</p>
@@ -434,6 +534,7 @@ export default function DashboardAdmin({ seccion, setSeccion }) {
 
     return (
       <div>
+        {avisoError}
         {/* Saludo */}
         <div style={{ marginBottom: "28px" }}>
           <p style={{ fontSize: "13px", color: "#888", margin: "0 0 4px" }}>
@@ -447,7 +548,6 @@ export default function DashboardAdmin({ seccion, setSeccion }) {
         {/* Cards resumen */}
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: "16px", marginBottom: "32px" }}>
           {[
-            { label: "Solicitudes pendientes", valor: pendientes.length, color: "#FFC800", ir: "Solicitudes" },
             { label: "Entrenadores activos", valor: activos.length, color: "#1D9E75", ir: "Entrenadores" },
             { label: "Clientes totales", valor: clientes.filter(c => c.estado === "Activo").length, color: "#378ADD", ir: "Clientes" },
             { label: "Sin entrenador", valor: clientes.filter(c => c.estado === "Activo" && !c.coach_id).length, color: "#E24B4A", ir: "Clientes" },
@@ -466,7 +566,7 @@ export default function DashboardAdmin({ seccion, setSeccion }) {
           ))}
         </div>
 
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "20px", marginBottom: "20px" }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: "20px", marginBottom: "20px" }}>
 
           {/* Últimos coaches */}
           <div style={{ background: "#FFFFFF", border: "0.5px solid #E5E5E5", borderRadius: "12px", padding: "24px" }}>
@@ -481,7 +581,7 @@ export default function DashboardAdmin({ seccion, setSeccion }) {
                   <div style={{
                     width: "32px", height: "32px", borderRadius: "50%", background: "#0B0B0B",
                     display: "flex", alignItems: "center", justifyContent: "center",
-                    color: "#FFC800", fontWeight: "900", fontSize: "12px", flexShrink: 0
+                    color: "#FF5A64", fontWeight: "900", fontSize: "12px", flexShrink: 0
                   }}>
                     {c.nombre?.[0]?.toUpperCase()}
                   </div>
@@ -492,8 +592,8 @@ export default function DashboardAdmin({ seccion, setSeccion }) {
                 </div>
                 <span style={{
                   fontSize: "11px", fontWeight: "700", padding: "3px 10px", borderRadius: "20px",
-                  background: c.estado === "activo" ? "#E1F5EE" : c.estado === "pendiente" ? "#FFF8E1" : "#F5F5F5",
-                  color: c.estado === "activo" ? "#085041" : c.estado === "pendiente" ? "#B8860B" : "#555"
+                  background: c.estado === "activo" ? "#E1F5EE" : c.estado === "pendiente" ? "#FDECEE" : "#F5F5F5",
+                  color: c.estado === "activo" ? "#085041" : c.estado === "pendiente" ? "#9B1C24" : "#555"
                 }}>
                   {c.estado?.toUpperCase()}
                 </span>
@@ -548,171 +648,20 @@ export default function DashboardAdmin({ seccion, setSeccion }) {
           ) : (
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: "16px" }}>
               {topCoaches.map((c, i) => (
-  <div key={c.id} style={{ background: "#F5F5F5", borderRadius: "12px", padding: "20px" }}>
-    <p style={{ fontSize: "11px", fontWeight: "700", color: "#888", marginBottom: "8px" }}>
-      #{i + 1} ENTRENADOR
-    </p>
-    <p style={{ fontSize: "16px", fontWeight: "900", color: "#0B0B0B", margin: "0 0 4px" }}>
-      {c.nombre} {c.apellido}
-    </p>
-    <p style={{ fontSize: "28px", fontWeight: "900", color: "#FFC800", margin: 0 }}>{c.totalClientes}</p>
-    <p style={{ fontSize: "12px", color: "#555", margin: "4px 0 0" }}>clientes asignados</p>
-  </div>
-))}
+                <div key={c.id} style={{ background: i === 0 ? "#0B0B0B" : "#F5F5F5", borderRadius: "12px", padding: "20px" }}>
+                  <p style={{ fontSize: "11px", fontWeight: "700", color: i === 0 ? "#E11D2E" : "#888", marginBottom: "8px" }}>
+                    #{i + 1} ENTRENADOR
+                  </p>
+                  <p style={{ fontSize: "16px", fontWeight: "900", color: i === 0 ? "#FFFFFF" : "#0B0B0B", margin: "0 0 4px" }}>
+                    {c.nombre} {c.apellido}
+                  </p>
+                  <p style={{ fontSize: "28px", fontWeight: "900", color: "#E11D2E", margin: 0 }}>{c.totalClientes}</p>
+                  <p style={{ fontSize: "12px", color: i === 0 ? "#888" : "#555", margin: "4px 0 0" }}>clientes asignados</p>
+                </div>
+              ))}
             </div>
           )}
         </div>
-      </div>
-    );
-  }
-
-  // ===== SOLICITUDES =====
-  if (seccion === "Solicitudes") {
-    const pendientesFiltrados = pendientes.filter(c =>
-      `${c.nombre} ${c.apellido} ${c.email}`.toLowerCase().includes(busquedaSol.toLowerCase())
-    );
-
-    const toggleSeleccion = (id) => {
-      setSeleccionados(prev => prev.includes(id) ? prev.filter(s => s !== id) : [...prev, id]);
-    };
-
-    const aprobarMasivo = async () => {
-      const { error } = await supabase.from("usuarios").update({ estado: "activo" }).in("id", seleccionados);
-      if (error) console.error(error);
-      setSeleccionados([]);
-      cargarCoaches();
-    };
-
-    const rechazarMasivo = async () => {
-      const { error } = await supabase.from("usuarios").update({ estado: "rechazado" }).in("id", seleccionados);
-      if (error) console.error(error);
-      setSeleccionados([]);
-      cargarCoaches();
-    };
-
-    return (
-      <div>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "20px", flexWrap: "wrap", gap: "12px" }}>
-          <h3 style={{ fontSize: "20px", fontWeight: "900", color: "#0B0B0B", margin: 0 }}>
-            Solicitudes pendientes ({pendientes.length})
-          </h3>
-          {seleccionados.length > 0 && (
-            <div style={{ display: "flex", gap: "8px" }}>
-              <span style={{ fontSize: "13px", color: "#888", alignSelf: "center" }}>{seleccionados.length} seleccionados</span>
-              <button onClick={aprobarMasivo} style={estiloBoton("#FFC800", "#0B0B0B")}>Aprobar todos</button>
-              <button onClick={rechazarMasivo} style={estiloBoton("#FFF0F0", "#CC0000")}>Rechazar todos</button>
-            </div>
-          )}
-        </div>
-
-        <input
-          placeholder="Buscar por nombre o correo..."
-          value={busquedaSol}
-          onChange={e => setBusquedaSol(e.target.value)}
-          style={{ ...estiloInput, marginBottom: "16px" }}
-        />
-
-        {pendientes.length === 0 ? (
-          <div style={{ ...estiloCard, textAlign: "center", padding: "60px" }}>
-            <p style={{ color: "#888" }}>No hay solicitudes pendientes</p>
-          </div>
-        ) : coachSeleccionado ? (
-          <div style={{ maxWidth: "480px" }}>
-            <button onClick={() => setCoachSeleccionado(null)} style={{
-              background: "none", border: "none", cursor: "pointer", color: "#888", fontSize: "13px", marginBottom: "24px"
-            }}>← Volver</button>
-            <div style={estiloCard}>
-              <div style={{ display: "flex", alignItems: "center", gap: "16px", marginBottom: "20px" }}>
-                <div style={{
-                  width: "56px", height: "56px", borderRadius: "50%", background: "#0B0B0B",
-                  display: "flex", alignItems: "center", justifyContent: "center",
-                  color: "#FFC800", fontWeight: "900", fontSize: "20px"
-                }}>
-                  {coachSeleccionado.nombre?.[0]?.toUpperCase()}
-                </div>
-                <div>
-                  <h2 style={{ fontSize: "16px", fontWeight: "900", color: "#0B0B0B", margin: 0 }}>
-                    {coachSeleccionado.nombre} {coachSeleccionado.apellido}
-                  </h2>
-                  <p style={{ fontSize: "12px", color: "#888", margin: "4px 0 0" }}>{coachSeleccionado.email}</p>
-                  <p style={{ fontSize: "12px", color: "#888", margin: "4px 0 0" }}>
-                    Registrado: {fechaLegible(coachSeleccionado.creado_en)}
-                  </p>
-                </div>
-              </div>
-
-              <div style={{
-                background: "#F5F5F5", borderRadius: "10px", padding: "14px 16px",
-                marginBottom: "20px", display: "flex", flexDirection: "column", gap: "8px", fontSize: "13px"
-              }}>
-                <div>
-                  <p style={{ margin: "0 0 2px", color: "#888", fontSize: "10px", textTransform: "uppercase", fontWeight: "700" }}>Teléfono</p>
-                  <p style={{ margin: 0, fontWeight: "700", color: "#0B0B0B" }}>{coachSeleccionado.telefono || "No registrado"}</p>
-                </div>
-                <div>
-                  <p style={{ margin: "0 0 2px", color: "#888", fontSize: "10px", textTransform: "uppercase", fontWeight: "700" }}>
-                    {coachSeleccionado.tipo_documento === "pasaporte" ? "Pasaporte" : "Cédula"}
-                  </p>
-                  <p style={{ margin: 0, fontWeight: "700", color: "#0B0B0B" }}>{coachSeleccionado.documento || "No registrado"}</p>
-                </div>
-                <div>
-                  <p style={{ margin: "0 0 2px", color: "#888", fontSize: "10px", textTransform: "uppercase", fontWeight: "700" }}>Dirección</p>
-                  <p style={{ margin: 0, fontWeight: "700", color: "#0B0B0B" }}>{coachSeleccionado.direccion || "No registrada"}</p>
-                </div>
-                {coachSeleccionado.codigo && (
-                  <div>
-                    <p style={{ margin: "0 0 2px", color: "#888", fontSize: "10px", textTransform: "uppercase", fontWeight: "700" }}>Código de entrenador</p>
-                    <p style={{ margin: 0, fontWeight: "700", color: "#0B0B0B" }}>{coachSeleccionado.codigo}</p>
-                  </div>
-                )}
-              </div>
-
-              <div style={{ display: "flex", gap: "10px" }}>
-                <button onClick={() => cambiarEstadoCoach(coachSeleccionado.id, "activo")} style={estiloBoton("#FFC800", "#0B0B0B")}>Aprobar</button>
-                <button onClick={() => cambiarEstadoCoach(coachSeleccionado.id, "rechazado")} style={estiloBoton("#F5F5F5", "#CC0000")}>Rechazar</button>
-              </div>
-            </div>
-          </div>
-        ) : (
-          <div>
-            {pendientesFiltrados.length > 0 && (
-              <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "12px" }}>
-                <input type="checkbox"
-                  checked={seleccionados.length === pendientesFiltrados.length && pendientesFiltrados.length > 0}
-                  onChange={e => setSeleccionados(e.target.checked ? pendientesFiltrados.map(c => c.id) : [])}
-                  style={{ width: "16px", height: "16px", cursor: "pointer" }}
-                />
-                <span style={{ fontSize: "13px", color: "#888" }}>Seleccionar todos</span>
-              </div>
-            )}
-            {pendientesFiltrados.map(c => (
-              <div key={c.id} style={{ ...estiloCard, display: "flex", alignItems: "center", gap: "12px", marginBottom: "8px" }}>
-                <input type="checkbox"
-                  checked={seleccionados.includes(c.id)}
-                  onChange={() => toggleSeleccion(c.id)}
-                  style={{ width: "16px", height: "16px", cursor: "pointer", flexShrink: 0 }}
-                />
-                <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "space-between", cursor: "pointer" }}
-                  onClick={() => setCoachSeleccionado(c)}>
-                  <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
-                    <div style={{
-                      width: "40px", height: "40px", borderRadius: "50%", background: "#0B0B0B",
-                      display: "flex", alignItems: "center", justifyContent: "center",
-                      color: "#FFC800", fontWeight: "900", fontSize: "14px", flexShrink: 0
-                    }}>
-                      {c.nombre?.[0]?.toUpperCase()}
-                    </div>
-                    <div>
-                      <p style={{ fontWeight: "700", fontSize: "14px", color: "#0B0B0B", margin: 0 }}>{c.nombre} {c.apellido}</p>
-                      <p style={{ fontSize: "12px", color: "#888", margin: "2px 0 0" }}>{c.email}</p>
-                    </div>
-                  </div>
-                  <span style={{ fontSize: "12px", color: "#888" }}>Ver perfil →</span>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
       </div>
     );
   }
@@ -728,43 +677,81 @@ export default function DashboardAdmin({ seccion, setSeccion }) {
 
     return (
       <div>
+        {avisoError}
         {coachSeleccionado ? (
-          <PerfilCoach coach={coachSeleccionado} />
+          renderPerfilCoach(coachSeleccionado)
         ) : (
           <>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "20px" }}>
-              <h3 style={{ fontSize: "20px", fontWeight: "900", color: "#0B0B0B", margin: 0 }}>
-                Entrenadores ({activos.length} activos)
-              </h3>
+            <header style={{ alignItems: "center", display: "flex", flexWrap: "wrap", gap: "12px", justifyContent: "space-between", marginBottom: "18px" }}>
+              <div>
+                <h3 style={{ color: "#0B0B0B", fontSize: "20px", fontWeight: "900", margin: 0 }}>Directorio de entrenadores</h3>
+                <p style={{ color: "#888", fontSize: "13px", margin: "4px 0 0" }}>Busca, filtra y gestiona a los entrenadores del gimnasio.</p>
+              </div>
+              <button type="button" onClick={() => { setMostrarInvitar((v) => !v); setAvisoInvitacion({ tipo: "", texto: "" }); }}
+                style={{ background: "#0B0B0B", border: 0, borderRadius: "7px", color: "#FFFFFF", cursor: "pointer", fontSize: "12px", fontWeight: "800", padding: "9px 12px" }}>
+                Nuevo entrenador
+              </button>
+            </header>
+
+            {avisoInvitacion.texto && (
+              <Aviso tipo={avisoInvitacion.tipo === "error" ? "error" : "ok"} onCerrar={() => setAvisoInvitacion({ tipo: "", texto: "" })}>
+                {avisoInvitacion.texto}
+              </Aviso>
+            )}
+
+            {mostrarInvitar && (
+              <ModalInvitacion
+                rol="coach"
+                onCerrar={() => setMostrarInvitar(false)}
+                onEnviada={(email) => {
+                  setMostrarInvitar(false);
+                  setAvisoInvitacion({ tipo: "ok", texto: `Invitación enviada a ${email}. El entrenador crea su contraseña desde el enlace del correo.` });
+                }}
+              />
+            )}
+
+            <div style={{ alignItems: "center", display: "flex", flexWrap: "wrap", gap: "12px", marginBottom: "18px" }}>
+              <div style={{ flex: "1 1 280px", position: "relative" }}>
+                <svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#888" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ left: "16px", pointerEvents: "none", position: "absolute", top: "50%", transform: "translateY(-50%)" }}>
+                  <circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" />
+                </svg>
+                <input
+                  type="search"
+                  aria-label="Buscar entrenadores"
+                  placeholder="Buscar por nombre, apellido o correo"
+                  value={busquedaEnt}
+                  onChange={(e) => setBusquedaEnt(e.target.value)}
+                  style={{ background: "#FFFFFF", border: "1px solid #E5E5E5", borderRadius: "999px", boxSizing: "border-box", color: "#0B0B0B", fontSize: "14px", outline: "none", padding: "13px 18px 13px 46px", width: "100%" }}
+                  onFocus={(e) => { e.target.style.borderColor = "#E11D2E"; e.target.style.boxShadow = "0 0 0 3px rgba(225, 29, 46, 0.25)"; }}
+                  onBlur={(e) => { e.target.style.borderColor = "#E5E5E5"; e.target.style.boxShadow = "none"; }}
+                />
+              </div>
+              <div role="group" aria-label="Filtrar por estado" style={{ background: "#FFFFFF", border: "1px solid #E5E5E5", borderRadius: "999px", display: "flex", flexWrap: "wrap", gap: "4px", padding: "4px" }}>
+                {[["todos", "Todos"], ["activo", "Activos"], ["inactivo", "Inactivos"]].map(([valor, etiqueta]) => {
+                  const seleccionado = filtroEnt === valor;
+                  return (
+                    <button key={valor} type="button" aria-pressed={seleccionado} onClick={() => setFiltroEnt(valor)}
+                      style={{ background: seleccionado ? "#0B0B0B" : "transparent", border: "none", borderRadius: "999px", color: seleccionado ? "#FFFFFF" : "#666", cursor: "pointer", fontSize: "13px", fontWeight: seleccionado ? "800" : "600", padding: "9px 16px", transition: "background 0.15s" }}>
+                      {etiqueta}
+                    </button>
+                  );
+                })}
+              </div>
             </div>
 
-            <input
-              placeholder="Buscar entrenador por nombre o correo..."
-              value={busquedaEnt}
-              onChange={e => setBusquedaEnt(e.target.value)}
-              style={{ ...estiloInput, marginBottom: "20px" }}
-            />
-
-            {activosFiltrados.length === 0 && inactivosFiltrados.length === 0 ? (
-              <div style={{ ...estiloCard, textAlign: "center", padding: "40px" }}>
-                <p style={{ color: "#888" }}>No hay entrenadores con ese nombre</p>
-              </div>
-            ) : (
-              <>
-                {activosFiltrados.length > 0 && (
-                  <div style={{ marginBottom: "32px" }}>
-                    <p style={{ fontSize: "12px", fontWeight: "700", color: "#888", letterSpacing: "1px", marginBottom: "12px" }}>ACTIVOS</p>
-                    {activosFiltrados.map(c => <CardCoach key={c.id} coach={c} onClick={() => setCoachSeleccionado(c)} />)}
-                  </div>
-                )}
-                {inactivosFiltrados.length > 0 && (
-                  <div>
-                    <p style={{ fontSize: "12px", fontWeight: "700", color: "#888", letterSpacing: "1px", marginBottom: "12px" }}>INACTIVOS</p>
-                    {inactivosFiltrados.map(c => <CardCoach key={c.id} coach={c} onClick={() => setCoachSeleccionado(c)} />)}
-                  </div>
-                )}
-              </>
-            )}
+            {(() => {
+              const visibles = [
+                ...(filtroEnt === "inactivo" ? [] : activosFiltrados),
+                ...(filtroEnt === "activo" ? [] : inactivosFiltrados),
+              ];
+              return visibles.length === 0 ? (
+                <div style={{ background: "#FFF", border: "1px solid #E5E5E5", borderRadius: "12px", color: "#777", padding: "38px", textAlign: "center" }}>No hay entrenadores para mostrar.</div>
+              ) : (
+                <div style={{ display: "grid", gap: "8px" }}>
+                  {visibles.map((c) => <CardCoach key={c.id} coach={c} onClick={() => setCoachSeleccionado(c)} />)}
+                </div>
+              );
+            })()}
           </>
         )}
       </div>
@@ -772,8 +759,23 @@ export default function DashboardAdmin({ seccion, setSeccion }) {
   }
 
   // ===== CLIENTES =====
-  if (seccion === "Clientes") return (
+  if (seccion === "Clientes") {
+    const textoCliente = busquedaClientesEstable.trim().toLowerCase();
+    const clientesEncontrados = clientes.filter((cliente) => {
+      if (!textoCliente) return true;
+      const nombreCompleto = `${cliente.nombre || ""} ${cliente.apellido || ""}`.toLowerCase();
+      return nombreCompleto.includes(textoCliente) ||
+        (cliente.email || "").toLowerCase().includes(textoCliente);
+    });
+    const inicioPagina = (paginaClientes - 1) * CLIENTES_ADMIN_POR_PAGINA;
+    const clientesVisibles = clientesEncontrados.slice(
+      inicioPagina,
+      inicioPagina + CLIENTES_ADMIN_POR_PAGINA
+    );
+
+    return (
     <div>
+      {avisoError}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "20px" }}>
         <h3 style={{ fontSize: "20px", fontWeight: "900", color: "#0B0B0B", margin: 0 }}>
           Clientes ({clientes.filter(c => c.estado === "Activo").length} activos)
@@ -782,9 +784,20 @@ export default function DashboardAdmin({ seccion, setSeccion }) {
           setMostrarFormCliente(true);
           setClienteSeleccionado(null);
           setFormCliente({ nombre: "", apellido: "", email: "", telefono: "", coachId: "" });
-        }} style={estiloBoton("#FFC800", "#0B0B0B")}>
+        }} style={estiloBoton("#0B0B0B", "#FFFFFF")}>
           Nuevo cliente
         </button>
+      </div>
+
+      <div style={{ ...estiloCard, marginBottom: "18px", padding: "14px 18px" }}>
+        <input
+          type="search"
+          value={busquedaClientes}
+          onChange={(evento) => { setBusquedaClientes(evento.target.value); setPaginaClientes(1); }}
+          placeholder="Buscar cliente por nombre o correo..."
+          aria-label="Buscar cliente"
+          style={{ ...estiloInput, marginBottom: 0 }}
+        />
       </div>
 
       {mostrarFormCliente && (
@@ -850,7 +863,7 @@ export default function DashboardAdmin({ seccion, setSeccion }) {
             </div>
           )}
           <div style={{ display: "flex", gap: "10px" }}>
-            <button onClick={guardarCliente} style={estiloBoton("#FFC800", "#0B0B0B")}>
+            <button onClick={guardarCliente} style={estiloBoton("#0B0B0B", "#FFFFFF")}>
               {clienteSeleccionado ? "Guardar cambios" : "Crear cliente"}
             </button>
             <button onClick={() => {
@@ -864,13 +877,13 @@ export default function DashboardAdmin({ seccion, setSeccion }) {
         </div>
       )}
 
-      {clientes.length === 0 ? (
+      {clientesEncontrados.length === 0 ? (
         <div style={{ ...estiloCard, textAlign: "center", padding: "60px" }}>
           <p style={{ color: "#888" }}>No hay clientes registrados</p>
         </div>
       ) : (
         <div>
-          {clientes.map(c => {
+          {clientesVisibles.map(c => {
             const coachAsignado = activos.find(a => a.id === c.coach_id);
             return (
               <div key={c.id} style={{
@@ -921,105 +934,17 @@ export default function DashboardAdmin({ seccion, setSeccion }) {
               </div>
             );
           })}
+          <Paginacion
+            pagina={paginaClientes}
+            total={clientesEncontrados.length}
+            porPagina={CLIENTES_ADMIN_POR_PAGINA}
+            onCambiar={setPaginaClientes}
+          />
         </div>
       )}
 
-      <ModalHistorial />
+      {renderModalHistorial()}
     </div>
-  );
-
-  // ===== REPORTES =====
-  if (seccion === "Reportes") {
-    const datosGrafica = activos.map(coach => ({
-      nombre: `${coach.nombre} ${coach.apellido}`.split(" ").slice(0, 2).join(" "),
-      clientes: clientes.filter(c => c.coach_id === coach.id && c.estado === "Activo").length,
-    }));
-
-    const totalClientes = clientes.filter(c => c.estado === "Activo").length;
-    const totalInactivos = clientes.filter(c => c.estado === "Inactivo").length;
-    const sinCoach = clientes.filter(c => c.estado === "Activo" && !c.coach_id).length;
-
-    return (
-      <div>
-        <h3 style={{ fontSize: "20px", fontWeight: "900", color: "#0B0B0B", marginBottom: "20px" }}>Reportes</h3>
-
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: "16px", marginBottom: "32px" }}>
-          {[
-            { label: "Clientes activos", valor: totalClientes, color: "#1D9E75" },
-            { label: "Clientes inactivos", valor: totalInactivos, color: "#888" },
-            { label: "Sin entrenador asignado", valor: sinCoach, color: "#FFC800" },
-            { label: "Entrenadores activos", valor: activos.length, color: "#378ADD" },
-          ].map(card => (
-            <div key={card.label} style={{ background: "#FFFFFF", border: "0.5px solid #E5E5E5", borderRadius: "12px", padding: "20px 24px" }}>
-              <p style={{ fontSize: "12px", color: "#888", marginBottom: "8px" }}>{card.label}</p>
-              <p style={{ fontSize: "32px", fontWeight: "900", color: card.color, margin: 0 }}>{card.valor}</p>
-            </div>
-          ))}
-        </div>
-
-        <div style={{ background: "#FFFFFF", border: "0.5px solid #E5E5E5", borderRadius: "12px", padding: "24px", marginBottom: "24px" }}>
-          <h4 style={{ fontSize: "16px", fontWeight: "900", color: "#0B0B0B", marginBottom: "20px" }}>
-            Clientes por entrenador
-          </h4>
-          {activos.length === 0 ? (
-            <p style={{ color: "#888", textAlign: "center", padding: "40px 0" }}>No hay entrenadores activos</p>
-          ) : (
-            <BarChart width={600} height={280} data={datosGrafica} margin={{ top: 0, right: 20, left: 0, bottom: 0 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#F0F0F0" />
-              <XAxis dataKey="nombre" tick={{ fontSize: 12, fill: "#888" }} />
-              <YAxis allowDecimals={false} tick={{ fontSize: 12, fill: "#888" }} />
-              <Tooltip
-                contentStyle={{ borderRadius: "8px", border: "0.5px solid #E5E5E5", fontSize: "13px" }}
-                formatter={(value) => [value, "Clientes"]}
-              />
-              <Bar dataKey="clientes" fill="#FFC800" radius={[6, 6, 0, 0]} />
-            </BarChart>
-          )}
-        </div>
-
-        <div style={{ background: "#FFFFFF", border: "0.5px solid #E5E5E5", borderRadius: "12px", padding: "24px" }}>
-          <h4 style={{ fontSize: "16px", fontWeight: "900", color: "#0B0B0B", marginBottom: "20px" }}>
-            Detalle por entrenador
-          </h4>
-          {activos.map(coach => {
-            const clientesCoach = clientes.filter(c => c.coach_id === coach.id && c.estado === "Activo");
-            return (
-              <div key={coach.id} style={{ marginBottom: "16px", paddingBottom: "16px", borderBottom: "0.5px solid #F0F0F0" }}>
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "8px" }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-                    <div style={{
-                      width: "32px", height: "32px", borderRadius: "50%", background: "#0B0B0B",
-                      display: "flex", alignItems: "center", justifyContent: "center",
-                      color: "#FFC800", fontWeight: "900", fontSize: "12px"
-                    }}>
-                      {coach.nombre?.[0]?.toUpperCase()}
-                    </div>
-                    <p style={{ fontWeight: "700", fontSize: "14px", color: "#0B0B0B", margin: 0 }}>
-                      {coach.nombre} {coach.apellido}
-                    </p>
-                  </div>
-                  <span style={{
-                    fontSize: "13px", fontWeight: "900", color: "#FFC800",
-                    background: "#FFF8E1", padding: "4px 12px", borderRadius: "20px"
-                  }}>
-                    {clientesCoach.length} clientes
-                  </span>
-                </div>
-                <div style={{ height: "6px", background: "#F5F5F5", borderRadius: "99px", overflow: "hidden" }}>
-                  <div style={{
-                    height: "100%", borderRadius: "99px", background: "#FFC800",
-                    width: totalClientes > 0 ? `${(clientesCoach.length / totalClientes) * 100}%` : "0%",
-                    transition: "width 0.5s"
-                  }} />
-                </div>
-              </div>
-            );
-          })}
-          {activos.length === 0 && (
-            <p style={{ color: "#888", textAlign: "center", padding: "40px 0" }}>No hay entrenadores activos</p>
-          )}
-        </div>
-      </div>
     );
   }
 

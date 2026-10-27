@@ -1,0 +1,31 @@
+name: Calidad
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verificar:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ["20.19.x", "22.x", "24.x"]
+    steps:
+      - name: Descargar código
+        uses: actions/checkout@v4
+      - name: Configurar Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - name: Instalar dependencias reproducibles
+        run: npm ci
+      - name: Ejecutar controles de calidad
+        run: npm run check
+      - name: Medir cobertura
+        run: npm run test:coverage

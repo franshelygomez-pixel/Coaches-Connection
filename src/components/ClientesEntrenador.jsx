@@ -1,5 +1,11 @@
 import { useState, useEffect, useCallback } from "react";
-import { supabase } from "../supabaseClient";
+import { supabase, traducirErrorSupabase } from "../supabaseClient";
+import Paginacion from "./Paginacion";
+import useDebounce from "../hooks/useDebounce";
+import { obtenerRangoPagina } from "../utils/paginacion";
+import { perteneceAlCoach } from "../utils/permisos";
+import { normalizarCorreo } from "../utils/validaciones";
+import { fechaLocalDe } from "../utils/agenda";
 
 // --- Mismo lenguaje de diseño que InicioEntrenador.jsx ---
 const estiloCard = {
@@ -33,11 +39,30 @@ const labelStyle = {
 
 const ESTADO_COLORES = {
   "Activo": { bg: "#E1F5EE", color: "#085041" },
-  "En Evaluación": { bg: "#FFF8E1", color: "#B8860B" },
   "Inactivo": { bg: "#F5F5F5", color: "#555" },
 };
 
-const FILTROS = ["Todos", "Activo", "En Evaluación", "Inactivo"];
+const ESTADO_POR_DEFECTO = { bg: "#F5F5F5", color: "#555" };
+
+// Acepta "activo", "ACTIVO", "en evaluacion", etc. y devuelve el valor canónico.
+const normalizarEstadoCliente = (valor) => {
+  const clave = `${valor || ""}`
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .trim()
+    .toLowerCase();
+  if (clave === "activo") return "Activo";
+  if (clave === "inactivo") return "Inactivo";
+  return "Activo";
+};
+
+const FILTROS = ["Todos", "Activo", "Inactivo"];
+const CLIENTES_POR_PAGINA = 20;
+const MAX_DIGITOS_TELEFONO = 11; // +1 (809) 000-0000 → 1 + 10 dígitos
+
+// Se conserva el punto para poder buscar correos completos (juan@gmail.com).
+const limpiarBusqueda = (valor) =>
+  valor.replace(/[(),%*\\]/g, " ").replace(/\s+/g, " ").trim();
 
 // Adapta una fila de la tabla `clientes` al shape que ya usa la UI
 const adaptarCliente = (data) => ({
@@ -45,18 +70,23 @@ const adaptarCliente = (data) => ({
   nombre: `${data.nombre || ""} ${data.apellido || ""}`.trim() || "Sin nombre",
   email: data.email || "",
   telefono: data.telefono || "--",
-  estado: data.estado || "En Evaluación",
+  estado: normalizarEstadoCliente(data.estado),
   plan: data.plan || "Sin plan asignado",
   objetivo: data.objetivo || "Sin definir",
   pesoActual: data.peso_actual ? `${data.peso_actual} kg` : "--",
-  rutinaAsignada: data.rutina_asignada || "Sin Asignar",
+  rutinaAsignada: data.rutinas?.nombre || data.rutina_asignada || "Sin Asignar",
   rutinaId: data.rutina_id || "",
+  coachId: data.coach_id || "",
 });
 
 export default function ClientesEntrenador({ usuario }) {
   const [modoCrear, setModoCrear] = useState(false);
   const [filtroEstado, setFiltroEstado] = useState("Todos");
   const [busqueda, setBusqueda] = useState("");
+  const busquedaEstable = useDebounce(busqueda, 400);
+  const [pagina, setPagina] = useState(1);
+  const [totalResultados, setTotalResultados] = useState(0);
+  const [resumen, setResumen] = useState({ total: 0, activos: 0, inactivos: 0 });
   const [clienteSeleccionado, setClienteSeleccionado] = useState(null);
 
   const [clientes, setClientes] = useState([]);
@@ -76,7 +106,7 @@ export default function ClientesEntrenador({ usuario }) {
     apellido: "",
     email: "",
     telefono: "",
-    estado: "En Evaluación",
+    estado: "Activo",
     edad: "",
     objetivo: "Hipertrofia / Masa Muscular",
     plan: "Plan Smart",
@@ -89,12 +119,39 @@ export default function ClientesEntrenador({ usuario }) {
   const [mostrarFormMedicion, setMostrarFormMedicion] = useState(false);
   const [guardandoMedicion, setGuardandoMedicion] = useState(false);
   const [nuevaMedicion, setNuevaMedicion] = useState({
-    fecha: new Date().toISOString().split("T")[0],
+    fecha: fechaLocalDe(new Date()),
     peso: "",
     estatura: "",
     cintura: "",
     cadera: "",
   });
+
+  const cargarResumen = useCallback(async () => {
+    if (!coachId) return;
+
+    const contar = (estado) => {
+      let consulta = supabase
+        .from("clientes")
+        .select("id", { count: "exact", head: true })
+        .eq("coach_id", coachId);
+      if (estado) consulta = consulta.eq("estado", estado);
+      return consulta;
+    };
+
+    const [total, activos, inactivos] = await Promise.all([
+      contar(null),
+      contar("Activo"),
+      contar("Inactivo"),
+    ]);
+
+    if (!total.error && !activos.error && !inactivos.error) {
+      setResumen({
+        total: total.count || 0,
+        activos: activos.count || 0,
+        inactivos: inactivos.count || 0,
+      });
+    }
+  }, [coachId]);
 
   const cargarClientes = useCallback(async () => {
     if (!coachId) {
@@ -102,26 +159,44 @@ export default function ClientesEntrenador({ usuario }) {
       setError("No se detectó una sesión activa.");
       return;
     }
-    const { data, error: errLectura } = await supabase
+    const { desde, hasta } = obtenerRangoPagina(pagina, CLIENTES_POR_PAGINA);
+    const texto = limpiarBusqueda(busquedaEstable);
+
+    let consulta = supabase
       .from("clientes")
-      .select("*")
+      .select("id,nombre,apellido,email,telefono,estado,edad,objetivo,plan,observaciones,coach_id,rutina_id,rutina_asignada,peso_actual,estatura,creado_en,rutinas(nombre,nivel)", { count: "exact" })
       .eq("coach_id", coachId)
-      .order("nombre", { ascending: true });
+      .order("nombre", { ascending: true })
+      .range(desde, hasta);
+
+    if (filtroEstado !== "Todos") consulta = consulta.eq("estado", filtroEstado);
+    if (texto) {
+      consulta = consulta.or(
+        `nombre.ilike.%${texto}%,apellido.ilike.%${texto}%,email.ilike.%${texto}%`
+      );
+    }
+
+    const { data, count, error: errLectura } = await consulta;
 
     if (errLectura) {
       console.error("Error al leer clientes:", errLectura);
       setError("No se pudieron cargar los clientes. Verifica las políticas RLS.");
     } else {
       setClientes((data || []).map(adaptarCliente));
+      setTotalResultados(count || 0);
       setError(null);
     }
+    void cargarResumen();
     setCargando(false);
-  }, [coachId]);
+  }, [busquedaEstable, cargarResumen, coachId, filtroEstado, pagina]);
 
   // --- Carga inicial + suscripción en tiempo real (reemplaza onSnapshot) ---
   useEffect(() => {
-    cargarClientes();
     if (!coachId) return;
+
+    const temporizador = window.setTimeout(() => {
+      void cargarClientes();
+    }, 0);
 
     const canal = supabase
       .channel(`clientes-coach-${coachId}`)
@@ -132,7 +207,10 @@ export default function ClientesEntrenador({ usuario }) {
       )
       .subscribe();
 
-    return () => supabase.removeChannel(canal);
+    return () => {
+      window.clearTimeout(temporizador);
+      void supabase.removeChannel(canal);
+    };
   }, [coachId, cargarClientes]);
 
   // --- Rutinas del coach, para el modal de asignación ---
@@ -140,11 +218,15 @@ export default function ClientesEntrenador({ usuario }) {
     if (!coachId) return;
 
     const cargarRutinas = async () => {
-      const { data } = await supabase
+      const { data, error: errorRutinas } = await supabase
         .from("rutinas")
-        .select("*")
+        .select("id,nombre,nivel,contenido,coach_id")
         .eq("coach_id", coachId)
         .order("nombre", { ascending: true });
+      if (errorRutinas) {
+        setError("No se pudieron cargar las rutinas.");
+        return;
+      }
       setRutinas((data || []).map((r) => ({ docId: r.id, ...r })));
     };
     cargarRutinas();
@@ -163,17 +245,16 @@ export default function ClientesEntrenador({ usuario }) {
 
   // --- Historial de mediciones del cliente que tiene el expediente abierto ---
   useEffect(() => {
-    if (!clienteSeleccionado) {
-      setMediciones([]);
-      return;
-    }
+    const clienteSeleccionadoId = clienteSeleccionado?.docId;
+    if (!clienteSeleccionadoId) return;
 
     const cargarMediciones = async () => {
       setCargandoMediciones(true);
       const { data, error: errMed } = await supabase
         .from("mediciones")
         .select("*")
-        .eq("cliente_id", clienteSeleccionado.docId)
+        .eq("cliente_id", clienteSeleccionadoId)
+        .eq("coach_id", coachId)
         .order("fecha", { ascending: false });
       if (errMed) console.error("Error leyendo mediciones:", errMed);
       setMediciones((data || []).map((m) => ({ docId: m.id, ...m })));
@@ -182,16 +263,18 @@ export default function ClientesEntrenador({ usuario }) {
     cargarMediciones();
 
     const canal = supabase
-      .channel(`mediciones-cliente-${clienteSeleccionado.docId}`)
+      .channel(`mediciones-cliente-${clienteSeleccionadoId}`)
       .on(
         "postgres_changes",
-        { event: "*", schema: "public", table: "mediciones", filter: `cliente_id=eq.${clienteSeleccionado.docId}` },
+        { event: "*", schema: "public", table: "mediciones", filter: `cliente_id=eq.${clienteSeleccionadoId}` },
         cargarMediciones
       )
       .subscribe();
 
-    return () => supabase.removeChannel(canal);
-  }, [clienteSeleccionado?.docId]);
+    return () => {
+      void supabase.removeChannel(canal);
+    };
+  }, [clienteSeleccionado?.docId, coachId]);
 
   const handleGuardarCliente = async (e) => {
     e.preventDefault();
@@ -222,25 +305,36 @@ export default function ClientesEntrenador({ usuario }) {
       return;
     }
 
-    if (nuevoCliente.telefono && nuevoCliente.telefono.replace(/\D/g, "").length > 10) {
-      setError("El teléfono no puede tener más de 10 dígitos.");
+    if (nuevoCliente.telefono && nuevoCliente.telefono.replace(/\D/g, "").length > MAX_DIGITOS_TELEFONO) {
+      setError(`El teléfono no puede tener más de ${MAX_DIGITOS_TELEFONO} dígitos.`);
       return;
     }
 
-    // Evitar correos duplicados dentro de tus propios clientes
-    const yaExiste = clientes.some(
-      (c) => c.email.trim().toLowerCase() === nuevoCliente.email.trim().toLowerCase()
-    );
-    if (yaExiste) {
+    // La comprobación se realiza en Supabase porque la lista visible está paginada.
+    // Se usa .eq (no .ilike) porque _ y % son comodines en ilike. El correo ya
+    // se guarda normalizado (minúsculas), y la BD tiene un índice único como respaldo.
+    const { data: clienteDuplicado, error: errorDuplicado } = await supabase
+      .from("clientes")
+      .select("id")
+      .eq("coach_id", coachId)
+      .eq("email", normalizarCorreo(nuevoCliente.email))
+      .limit(1)
+      .maybeSingle();
+
+    if (errorDuplicado) {
+      setError("No se pudo comprobar el correo del cliente.");
+      return;
+    }
+    if (clienteDuplicado) {
       setError("Ya tienes un cliente registrado con ese correo.");
       return;
     }
 
     setGuardando(true);
-    const { error: errInsert } = await supabase.from("clientes").insert({
+    const { data: clienteCreado, error: errInsert } = await supabase.from("clientes").insert({
       nombre: nuevoCliente.nombre.trim(),
       apellido: nuevoCliente.apellido.trim() || "",
-      email: nuevoCliente.email.trim(),
+      email: normalizarCorreo(nuevoCliente.email),
       telefono: nuevoCliente.telefono || "",
       estado: nuevoCliente.estado,
       coach_id: coachId,
@@ -249,15 +343,19 @@ export default function ClientesEntrenador({ usuario }) {
       edad: nuevoCliente.edad || null,
       observaciones: nuevoCliente.observaciones || "",
       rutina_asignada: "Sin Asignar",
-    });
+    }).select("id").single();
 
-    if (errInsert) {
+    if (errInsert || !clienteCreado) {
       console.error("Error al guardar cliente:", errInsert);
-      setError("No se pudo guardar el cliente. Intenta de nuevo.");
+      setError(
+        errInsert?.code === "23505"
+          ? "Ya tienes un cliente registrado con ese correo."
+          : "No se pudo guardar el cliente. Intenta de nuevo."
+      );
     } else {
       setNuevoCliente({
         nombre: "", apellido: "", email: "", telefono: "",
-        estado: "En Evaluación", edad: "",
+        estado: "Activo", edad: "",
         objetivo: "Hipertrofia / Masa Muscular", plan: "Plan Smart", observaciones: "",
       });
       setModoCrear(false);
@@ -267,12 +365,20 @@ export default function ClientesEntrenador({ usuario }) {
   };
 
   const handleCambiarEstado = async (cliente, nuevoEstado) => {
-    const { error: errUpdate } = await supabase
+    if (!perteneceAlCoach(cliente, coachId)) {
+      setError("No tienes permiso para modificar este cliente.");
+      return;
+    }
+
+    const { data, error: errUpdate } = await supabase
       .from("clientes")
       .update({ estado: nuevoEstado })
-      .eq("id", cliente.docId);
+      .eq("id", cliente.docId)
+      .eq("coach_id", coachId)
+      .select("id")
+      .maybeSingle();
 
-    if (errUpdate) {
+    if (errUpdate || !data) {
       console.error("Error al actualizar estado:", errUpdate);
       setError("No se pudo actualizar el estado del cliente.");
     } else {
@@ -289,26 +395,17 @@ export default function ClientesEntrenador({ usuario }) {
   const handleConfirmarAsignacion = async (e) => {
     e.preventDefault();
     if (!clienteParaAsignarRutina) return;
+    if (!perteneceAlCoach(clienteParaAsignarRutina, coachId)) {
+      setError("No tienes permiso para modificar este cliente.");
+      return;
+    }
 
     setAsignandoRutina(true);
-    let errAsignar = null;
-
-    if (rutinaSeleccionada === "") {
-      const { error: err } = await supabase
-        .from("clientes")
-        .update({ rutina_asignada: "Sin Asignar", rutina_id: null })
-        .eq("id", clienteParaAsignarRutina.docId);
-      errAsignar = err;
-    } else {
-      const rutina = rutinas.find((r) => r.docId === rutinaSeleccionada);
-      if (rutina) {
-        const { error: err } = await supabase
-          .from("clientes")
-          .update({ rutina_asignada: rutina.nombre, rutina_id: rutina.docId })
-          .eq("id", clienteParaAsignarRutina.docId);
-        errAsignar = err;
-      }
-    }
+    const { data, error: errorAsignacion } = await supabase.rpc("asignar_rutina_cliente", {
+      p_cliente_id: clienteParaAsignarRutina.docId,
+      p_rutina_id: rutinaSeleccionada || null,
+    });
+    const errAsignar = errorAsignacion || (!data ? { message: "No se modificó el cliente." } : null);
 
     if (errAsignar) {
       console.error("Error al asignar rutina:", errAsignar);
@@ -321,19 +418,15 @@ export default function ClientesEntrenador({ usuario }) {
     setAsignandoRutina(false);
   };
 
-  // --- IMC: cálculo y clasificación (rangos estándar OMS) ---
-  const clasificarIMC = (imc) => {
-    if (imc < 18.5) return { label: "Bajo peso", bg: "#EAF2FB", color: "#2E5D9A" };
-    if (imc < 25) return { label: "Normal", bg: "#E1F5EE", color: "#085041" };
-    if (imc < 30) return { label: "Sobrepeso", bg: "#FFF8E1", color: "#B8860B" };
-    return { label: "Obesidad", bg: "#FDECEC", color: "#B02A2A" };
-  };
-
   const handleGuardarMedicion = async (e) => {
     e.preventDefault();
     setError(null);
 
     if (!clienteSeleccionado) return;
+    if (!perteneceAlCoach(clienteSeleccionado, coachId)) {
+      setError("No tienes permiso para registrar mediciones de este cliente.");
+      return;
+    }
 
     if (!nuevaMedicion.fecha) {
       setError("Selecciona la fecha de la medición.");
@@ -349,66 +442,45 @@ export default function ClientesEntrenador({ usuario }) {
     const cintura = nuevaMedicion.cintura ? parseFloat(nuevaMedicion.cintura) : null;
     const cadera = nuevaMedicion.cadera ? parseFloat(nuevaMedicion.cadera) : null;
 
-    if (isNaN(peso) || peso <= 0) {
-      setError("El peso debe ser un número mayor a 0.");
+    if (isNaN(peso) || peso <= 0 || peso > 500) {
+      setError("El peso debe estar entre 0 y 500 kg.");
       return;
     }
-    if (isNaN(estatura) || estatura <= 0) {
-      setError("La estatura debe ser un número mayor a 0.");
+    if (isNaN(estatura) || estatura < 50 || estatura > 260) {
+      setError("La estatura debe estar entre 50 y 260 cm.");
       return;
     }
-    if (nuevaMedicion.cintura && (isNaN(cintura) || cintura <= 0)) {
-      setError("La cintura debe ser un número mayor a 0.");
+    if (nuevaMedicion.cintura && (isNaN(cintura) || cintura <= 0 || cintura > 300)) {
+      setError("La cintura debe estar entre 0 y 300 cm.");
       return;
     }
-    if (nuevaMedicion.cadera && (isNaN(cadera) || cadera <= 0)) {
-      setError("La cadera debe ser un número mayor a 0.");
+    if (nuevaMedicion.cadera && (isNaN(cadera) || cadera <= 0 || cadera > 300)) {
+      setError("La cadera debe estar entre 0 y 300 cm.");
       return;
     }
-
-    const imc = Math.round((peso / ((estatura / 100) ** 2)) * 10) / 10;
-    const icc = cintura && cadera ? Math.round((cintura / cadera) * 100) / 100 : null;
 
     setGuardandoMedicion(true);
-    const { error: errMedicion } = await supabase.from("mediciones").insert({
-      cliente_id: clienteSeleccionado.docId,
-      coach_id: coachId,
-      fecha: nuevaMedicion.fecha,
-      peso,
-      estatura,
-      cintura,
-      cadera,
-      imc,
-      icc,
+    const { error: errMedicion } = await supabase.rpc("registrar_medicion_cliente", {
+      p_cliente_id: clienteSeleccionado.docId,
+      p_fecha: nuevaMedicion.fecha,
+      p_peso: peso,
+      p_estatura: estatura,
+      p_cintura: cintura,
+      p_cadera: cadera,
     });
 
     if (!errMedicion) {
-      // Denormalizamos el último peso/estatura en el cliente
-      await supabase
-        .from("clientes")
-        .update({ peso_actual: peso, estatura })
-        .eq("id", clienteSeleccionado.docId);
-
-      setNuevaMedicion({ fecha: new Date().toISOString().split("T")[0], peso: "", estatura: "", cintura: "", cadera: "" });
+      setNuevaMedicion({ fecha: fechaLocalDe(new Date()), peso: "", estatura: "", cintura: "", cadera: "" });
       setMostrarFormMedicion(false);
       cargarClientes();
     } else {
       console.error("Error al guardar medición:", errMedicion);
-      setError("No se pudo guardar la medición.");
+      setError(traducirErrorSupabase(errMedicion));
     }
     setGuardandoMedicion(false);
   };
 
-  const clientesFiltrados = clientes.filter((c) => {
-    const cumpleFiltro = filtroEstado === "Todos" || c.estado === filtroEstado;
-    const cumpleBusqueda =
-      c.nombre.toLowerCase().includes(busqueda.toLowerCase()) ||
-      c.email.toLowerCase().includes(busqueda.toLowerCase());
-    return cumpleFiltro && cumpleBusqueda;
-  });
-
-  const totalActivos = clientes.filter((c) => c.estado === "Activo").length;
-  const totalEvaluacion = clientes.filter((c) => c.estado === "En Evaluación").length;
+  const clientesFiltrados = clientes;
 
   if (cargando) {
     return (
@@ -432,20 +504,9 @@ export default function ClientesEntrenador({ usuario }) {
           <p style={{ fontSize: "14px", color: "#888", marginTop: "6px" }}>
             {modoCrear
               ? "Ingresa la información del cliente para darlo de alta en Supabase."
-              : "Consulta expedientes, asigna rutinas y da seguimiento a tus clientes."}
+              : "Consulta expedientes, asigna rutinas y da seguimiento a tus clientes. Las altas las realiza el administrador."}
           </p>
         </div>
-
-        <button
-          onClick={() => setModoCrear(!modoCrear)}
-          style={{
-            background: "#FFC800", color: "#0B0B0B", fontWeight: "900",
-            fontSize: "13px", padding: "12px 20px", borderRadius: "10px",
-            border: "none", cursor: "pointer", flexShrink: 0,
-          }}
-        >
-          {modoCrear ? "← Volver al Directorio" : "Nuevo Cliente"}
-        </button>
       </div>
 
       {error && (
@@ -465,9 +526,9 @@ export default function ClientesEntrenador({ usuario }) {
             gap: "16px", marginBottom: "24px",
           }}>
             {[
-              { label: "Total registrados", valor: clientes.length, color: "#FFC800" },
-              { label: "Activos", valor: totalActivos, color: "#1D9E75" },
-              { label: "En evaluación", valor: totalEvaluacion, color: "#378ADD" },
+              { label: "Total registrados", valor: resumen.total, color: "#E11D2E" },
+              { label: "Activos", valor: resumen.activos, color: "#1D9E75" },
+              { label: "Inactivos", valor: resumen.inactivos, color: "#888888" },
             ].map((card) => (
               <div key={card.label} style={estiloCard}>
                 <p style={{ fontSize: "12px", color: "#888", marginBottom: "8px" }}>{card.label}</p>
@@ -485,12 +546,12 @@ export default function ClientesEntrenador({ usuario }) {
               {FILTROS.map((f) => (
                 <button
                   key={f}
-                  onClick={() => setFiltroEstado(f)}
+                  onClick={() => { setFiltroEstado(f); setPagina(1); }}
                   style={{
                     fontSize: "12px", fontWeight: "700", padding: "8px 14px",
                     borderRadius: "8px", border: "none", cursor: "pointer",
-                    background: filtroEstado === f ? "#FFC800" : "#F5F5F5",
-                    color: "#0B0B0B",
+                    background: filtroEstado === f ? "#0B0B0B" : "#F5F5F5",
+                    color: filtroEstado === f ? "#FFFFFF" : "#333",
                   }}
                 >
                   {f}
@@ -500,9 +561,9 @@ export default function ClientesEntrenador({ usuario }) {
             <input
               type="text"
               value={busqueda}
-              onChange={(e) => setBusqueda(e.target.value)}
+              onChange={(e) => { setBusqueda(e.target.value); setPagina(1); }}
               placeholder="Buscar por nombre o correo..."
-              style={{ ...inputStyle, width: "260px" }}
+              style={{ ...inputStyle, width: "min(100%, 260px)" }}
             />
           </div>
 
@@ -516,7 +577,7 @@ export default function ClientesEntrenador({ usuario }) {
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
               {clientesFiltrados.map((cliente) => {
-                const colores = ESTADO_COLORES[cliente.estado];
+                const colores = ESTADO_COLORES[cliente.estado] || ESTADO_POR_DEFECTO;
                 return (
                   <div key={cliente.docId} style={estiloCard}>
                     <div style={{ display: "flex", alignItems: "center", gap: "16px", flexWrap: "wrap" }}>
@@ -578,16 +639,23 @@ export default function ClientesEntrenador({ usuario }) {
               })}
             </div>
           )}
+
+          <Paginacion
+            pagina={pagina}
+            total={totalResultados}
+            porPagina={CLIENTES_POR_PAGINA}
+            onCambiar={setPagina}
+          />
         </>
       ) : (
         /* Formulario de alta */
         <div style={{ ...estiloCard, maxWidth: "720px" }}>
           <form onSubmit={handleGuardarCliente} style={{ display: "flex", flexDirection: "column", gap: "24px" }}>
             <div>
-              <p style={{ fontSize: "12px", fontWeight: "900", color: "#FFC800", textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: "12px" }}>
+              <p style={{ fontSize: "12px", fontWeight: "900", color: "#E11D2E", textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: "12px" }}>
                 1. Información Personal
               </p>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "14px" }}>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: "14px" }}>
                 <div>
                   <label style={labelStyle}>Nombre *</label>
                   <input
@@ -618,7 +686,7 @@ export default function ClientesEntrenador({ usuario }) {
                 <div>
                   <label style={labelStyle}>Teléfono</label>
                   <input
-                    type="text" style={inputStyle}
+                    type="tel" inputMode="tel" autoComplete="tel" style={inputStyle}
                     value={nuevoCliente.telefono}
                     onChange={(e) => setNuevoCliente({ ...nuevoCliente, telefono: e.target.value })}
                     placeholder="+1 (809) 000-0000"
@@ -631,8 +699,8 @@ export default function ClientesEntrenador({ usuario }) {
                     value={nuevoCliente.estado}
                     onChange={(e) => setNuevoCliente({ ...nuevoCliente, estado: e.target.value })}
                   >
-                    <option value="En Evaluación">En Evaluación</option>
                     <option value="Activo">Activo</option>
+                    <option value="Inactivo">Inactivo</option>
                   </select>
                 </div>
                 <div>
@@ -648,10 +716,10 @@ export default function ClientesEntrenador({ usuario }) {
             </div>
 
             <div>
-              <p style={{ fontSize: "12px", fontWeight: "900", color: "#FFC800", textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: "12px" }}>
+              <p style={{ fontSize: "12px", fontWeight: "900", color: "#E11D2E", textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: "12px" }}>
                 2. Objetivos y Plan
               </p>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "14px", marginBottom: "14px" }}>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: "14px", marginBottom: "14px" }}>
                 <div>
                   <label style={labelStyle}>Objetivo Principal</label>
                   <select
@@ -704,7 +772,7 @@ export default function ClientesEntrenador({ usuario }) {
                 type="submit"
                 disabled={guardando}
                 style={{
-                  background: "#FFC800", color: "#0B0B0B", fontWeight: "900", fontSize: "13px",
+                  background: "#0B0B0B", color: "#FFFFFF", fontWeight: "900", fontSize: "13px",
                   padding: "12px 22px", borderRadius: "8px", border: "none",
                   cursor: guardando ? "default" : "pointer", opacity: guardando ? 0.6 : 1,
                 }}
@@ -748,7 +816,7 @@ export default function ClientesEntrenador({ usuario }) {
                   ))}
                 </select>
                 {rutinas.length === 0 && (
-                  <p style={{ fontSize: "11px", color: "#B8860B", marginTop: "6px" }}>
+                  <p style={{ fontSize: "11px", color: "#9B1C24", marginTop: "6px" }}>
                     Aún no tienes rutinas creadas. Ve a "Rutinas" en el menú para crear la primera.
                   </p>
                 )}
@@ -769,7 +837,7 @@ export default function ClientesEntrenador({ usuario }) {
                   type="submit"
                   disabled={asignandoRutina}
                   style={{
-                    background: "#FFC800", color: "#0B0B0B", fontWeight: "900", fontSize: "13px",
+                    background: "#0B0B0B", color: "#FFFFFF", fontWeight: "900", fontSize: "13px",
                     padding: "10px 20px", borderRadius: "8px", border: "none",
                     cursor: asignandoRutina ? "default" : "pointer", opacity: asignandoRutina ? 0.6 : 1,
                   }}
@@ -808,7 +876,7 @@ export default function ClientesEntrenador({ usuario }) {
             </div>
 
             <div style={{
-              display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px",
+              display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: "12px",
               background: "#F5F5F5", borderRadius: "10px", padding: "16px", marginBottom: "16px", fontSize: "13px",
             }}>
               <div>
@@ -838,8 +906,8 @@ export default function ClientesEntrenador({ usuario }) {
                 <button
                   onClick={() => setMostrarFormMedicion(!mostrarFormMedicion)}
                   style={{
-                    background: mostrarFormMedicion ? "#F5F5F5" : "#FFC800",
-                    color: "#0B0B0B", fontWeight: "700", fontSize: "11px",
+                    background: mostrarFormMedicion ? "#F5F5F5" : "#0B0B0B",
+                    color: mostrarFormMedicion ? "#333" : "#FFFFFF", fontWeight: "700", fontSize: "11px",
                     padding: "6px 12px", borderRadius: "8px",
                     border: mostrarFormMedicion ? "0.5px solid #E5E5E5" : "none", cursor: "pointer",
                   }}
@@ -856,7 +924,7 @@ export default function ClientesEntrenador({ usuario }) {
                     marginBottom: "12px", display: "flex", flexDirection: "column", gap: "10px",
                   }}
                 >
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: "10px" }}>
                     <div>
                       <label style={labelStyle}>Fecha</label>
                       <input
@@ -922,9 +990,7 @@ export default function ClientesEntrenador({ usuario }) {
                 <p style={{ fontSize: "12px", color: "#888" }}>Aún no hay mediciones registradas.</p>
               ) : (
                 <div style={{ display: "flex", flexDirection: "column", gap: "8px", maxHeight: "220px", overflowY: "auto" }}>
-                  {mediciones.map((m) => {
-                    const clasif = clasificarIMC(m.imc);
-                    return (
+                  {mediciones.map((m) => (
                       <div key={m.docId} style={{
                         background: "#F5F5F5", borderRadius: "8px", padding: "10px 12px",
                         display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "12px", flexWrap: "wrap", gap: "6px",
@@ -936,13 +1002,12 @@ export default function ClientesEntrenador({ usuario }) {
                         )}
                         <span style={{
                           fontSize: "10px", fontWeight: "700", padding: "3px 8px", borderRadius: "20px",
-                          background: clasif.bg, color: clasif.color,
+                          background: "#EAF2FB", color: "#2E5D9A",
                         }}>
-                          IMC {m.imc} · {clasif.label}
+                          IMC registrado: {m.imc}
                         </span>
                       </div>
-                    );
-                  })}
+                  ))}
                 </div>
               )}
             </div>
