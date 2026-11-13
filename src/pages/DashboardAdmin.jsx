@@ -1,3 +1,4 @@
+import { InsigniaPerfil, datosPerfil } from "../utils/perfilCompleto";
 import { useCallback, useEffect, useState } from "react";
 import { supabase } from "../supabaseClient";
 import Paginacion from "../components/Paginacion";
@@ -46,7 +47,8 @@ export default function DashboardAdmin({ seccion, setSeccion }) {
       setErrorCarga("No se pudieron cargar los entrenadores.");
       return;
     }
-    const usuarios = data || [];
+    const perfiles = await datosPerfil(supabase);
+    const usuarios = (data || []).map((u) => ({ ...u, ...(perfiles[u.id] || {}) }));
     setPendientes(usuarios.filter((usuario) => usuario.estado === "pendiente"));
     setRechazados(usuarios.filter((usuario) => usuario.estado === "rechazado"));
     setActivos(usuarios.filter((usuario) => usuario.rol === "coach" && usuario.estado === "activo"));
@@ -335,6 +337,7 @@ export default function DashboardAdmin({ seccion, setSeccion }) {
         </div>
       </div>
       <div style={{ alignItems: "center", display: "flex", flexWrap: "wrap", gap: "8px" }}>
+        <InsigniaPerfil persona={coach} />
         <span style={{ background: coach.estado === "activo" ? "#E1F5EE" : "#F5F5F5", borderRadius: "20px", color: coach.estado === "activo" ? "#085041" : "#555", fontSize: "11px", fontWeight: "700", padding: "3px 10px" }}>
           {coach.estado === "activo" ? "ACTIVO" : "INACTIVO"}
         </span>

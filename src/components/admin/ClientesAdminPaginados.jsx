@@ -37,6 +37,9 @@ const estadoAcceso = (cuenta, invitacion) => {
   return invitacion.estado === "revocada" ? "Sin invitar" : "Invitación vencida";
 };
 
+const CAMPOS_PERFIL = [["telefono", "teléfono"], ["direccion", "dirección"], ["fecha_nacimiento", "fecha de nacimiento"], ["documento", "cédula/pasaporte"]];
+const faltantesPerfil = (c) => CAMPOS_PERFIL.filter(([k]) => !c[k] || !String(c[k]).trim()).map(([, e]) => e);
+
 const botonAntiguo = (fondo, color) => ({ background: fondo, border: "none", borderRadius: "8px", color, cursor: "pointer", fontSize: "13px", fontWeight: "700", padding: "8px 16px" });
 
 export default function ClientesAdminPaginados() {
@@ -60,6 +63,9 @@ export default function ClientesAdminPaginados() {
   const [errorHistorial, setErrorHistorial] = useState("");
   const [accesos, setAccesos] = useState({});
   const [invitandoId, setInvitandoId] = useState("");
+  const [ingreso, setIngreso] = useState(null); // null = consultando, true/false = ¿ha iniciado sesión alguna vez?
+  const [confirmarLiberar, setConfirmarLiberar] = useState(false);
+  const [liberando, setLiberando] = useState(false);
 
   const cargarAccesos = useCallback(async (ids) => {
     if (!ids.length) { setAccesos({}); return; }
@@ -80,7 +86,7 @@ export default function ClientesAdminPaginados() {
     const desde = (pagina - 1) * POR_PAGINA;
     let consulta = supabase
       .from("clientes")
-      .select("id,nombre,apellido,email,telefono,coach_id,estado,creado_en", { count: "exact" })
+      .select("id,nombre,apellido,email,telefono,direccion,fecha_nacimiento,documento_tipo,documento,perfil_completado_en,coach_id,estado,creado_en", { count: "exact" })
       .order("nombre", { ascending: true })
       .order("apellido", { ascending: true })
       .range(desde, desde + POR_PAGINA - 1);
@@ -141,6 +147,30 @@ export default function ClientesAdminPaginados() {
     setError("");
   };
 
+  const idEditado = clienteEditado?.id;
+  const tieneCuentaEditado = Boolean(idEditado && accesos[idEditado]?.cuenta);
+  useEffect(() => {
+    setConfirmarLiberar(false);
+    if (!idEditado || !tieneCuentaEditado) { setIngreso(null); return; }
+    let vigente = true;
+    setIngreso(null);
+    supabase.rpc("acceso_cliente_ingreso", { p_cliente_id: idEditado }).then(({ data, error: e }) => {
+      if (vigente) setIngreso(e ? true : Boolean(data)); // ante la duda se trata como cuenta en uso
+    });
+    return () => { vigente = false; };
+  }, [idEditado, tieneCuentaEditado]);
+
+  const liberarAcceso = async () => {
+    setLiberando(true);
+    setError("");
+    const { error: e } = await supabase.rpc("liberar_acceso_cliente", { p_cliente_id: clienteEditado.id });
+    setLiberando(false);
+    setConfirmarLiberar(false);
+    if (e) { setError(traducirErrorSupabase(e)); return; }
+    setMensaje("Acceso liberado. Corrige el correo si hace falta y envía una nueva invitación.");
+    await cargarClientes();
+  };
+
   const abrirEdicion = (cliente) => {
     setClienteEditado(cliente);
     setFormulario({
@@ -169,6 +199,11 @@ export default function ClientesAdminPaginados() {
     if (clienteEditado) datos.estado = formulario.estadoCliente;
     if (!datos.nombre || !/^\S+@\S+\.\S+$/.test(datos.email)) {
       setError("Escribe un nombre y un correo electrónico válido.");
+      return;
+    }
+    const soloLetras = /^[\p{L}\s'’-]+$/u;
+    if (!soloLetras.test(datos.nombre) || (datos.apellido && !soloLetras.test(datos.apellido))) {
+      setError("El nombre y el apellido solo pueden contener letras.");
       return;
     }
     if (datos.telefono && datos.telefono.length > 10) {
@@ -217,13 +252,29 @@ export default function ClientesAdminPaginados() {
     setError("");
     setMensaje("");
     setInvitandoId(cliente.id);
+    // Invitar a un cliente inactivo lo reactiva; si la invitación falla, se deja como estaba.
+    const reactivar = cliente.estado === "Inactivo";
+    if (reactivar) {
+      const { error: errorActivar } = await supabase.from("clientes").update({ estado: "Activo" }).eq("id", cliente.id);
+      if (errorActivar) {
+        setInvitandoId("");
+        setError(traducirErrorSupabase(errorActivar));
+        return;
+      }
+    }
     const { error: errorInvitacion } = await invitarUsuario({ rol: "cliente", clienteId: cliente.id });
     setInvitandoId("");
     if (errorInvitacion) {
+      if (reactivar) await supabase.from("clientes").update({ estado: "Inactivo" }).eq("id", cliente.id);
       setError(errorInvitacion);
+      await cargarClientes();
       return;
     }
-    setMensaje(`Invitación enviada a ${cliente.email}.`);
+    setMensaje(reactivar ? `Invitación enviada a ${cliente.email}. El cliente quedó activo.` : `Invitación enviada a ${cliente.email}.`);
+    if (reactivar) {
+      setClienteEditado((actual) => (actual && actual.id === cliente.id ? { ...actual, estado: "Activo" } : actual));
+      setFormulario((actual) => ({ ...actual, estadoCliente: "Activo" }));
+    }
     await cargarClientes();
   };
 
@@ -313,8 +364,13 @@ export default function ClientesAdminPaginados() {
         const acceso = clienteEditado ? (accesos[clienteEditado.id] || {}) : {};
         const etiquetaAcceso = estadoAcceso(acceso.cuenta, acceso.invitacion);
         const [fondoAcceso, colorAcceso] = ACCESO_ESTILOS[etiquetaAcceso];
-        const puedeInvitar = Boolean(clienteEditado) && !acceso.cuenta && clienteEditado.estado === "Activo";
-        const cambiarCampo = (nombre) => (evento) => setFormulario((actual) => ({ ...actual, [nombre]: evento.target.value }));
+        const sinActivar = Boolean(acceso.cuenta) && ingreso === false;
+        const puedeInvitar = Boolean(clienteEditado) && !acceso.cuenta;
+        const cambiarCampo = (nombre) => (evento) => {
+          let valor = evento.target.value;
+          if (nombre === "nombre" || nombre === "apellido") valor = valor.replace(/[^\p{L}\s'’-]/gu, "");
+          setFormulario((actual) => ({ ...actual, [nombre]: valor }));
+        };
         const correoBloqueado = Boolean(clienteEditado && (acceso.cuenta || etiquetaAcceso === "Invitación enviada"));
         return (
           <div role="dialog" aria-modal="true" aria-label={clienteEditado ? "Editar cliente" : "Nuevo cliente"} style={{ alignItems: "center", background: "rgba(11,11,11,0.45)", display: "flex", inset: 0, justifyContent: "center", padding: "16px", position: "fixed", zIndex: 80 }}>
@@ -375,13 +431,34 @@ export default function ClientesAdminPaginados() {
                   <p style={etiquetaSeccion}>Acceso al portal</p>
                   <div style={{ alignItems: "center", background: "#FAFAFA", border: "0.5px solid #E5E5E5", borderRadius: "12px", display: "flex", flexWrap: "wrap", gap: "12px", justifyContent: "space-between", padding: "14px 16px" }}>
                     <div>
-                      <span style={{ background: fondoAcceso, borderRadius: "20px", color: colorAcceso, fontSize: "11px", fontWeight: "700", padding: "3px 10px" }}>{etiquetaAcceso.toUpperCase()}</span>
+                      <span style={{ background: sinActivar ? "#FFF4E5" : fondoAcceso, borderRadius: "20px", color: sinActivar ? "#9A5B00" : colorAcceso, fontSize: "11px", fontWeight: "700", padding: "3px 10px" }}>{(sinActivar ? "Cuenta sin activar" : etiquetaAcceso).toUpperCase()}</span>
                       <p style={{ color: "#888", fontSize: "12px", lineHeight: 1.5, margin: "8px 0 0", maxWidth: "340px" }}>
                         {acceso.cuenta
-                          ? "El cliente ya creó su contraseña y puede entrar al portal."
+                          ? (sinActivar
+                            ? "La cuenta se creó pero esta persona nunca ha iniciado sesión. Si el correo es incorrecto, libera el acceso, corrígelo y envía una nueva invitación."
+                            : ingreso === null ? "Verificando acceso..." : "El cliente ya inició sesión en el portal.")
                           : `Se enviará un correo a ${clienteEditado.email} con un enlace para crear su contraseña.`}
                       </p>
                     </div>
+                    {sinActivar && (
+                      confirmarLiberar ? (
+                        <div style={{ display: "flex", gap: "8px" }}>
+                          <button type="button" disabled={liberando} onClick={() => void liberarAcceso()}
+                            style={{ background: "#CC0000", border: 0, borderRadius: "999px", color: "#FFFFFF", cursor: "pointer", fontSize: "13px", fontWeight: "800", padding: "10px 18px" }}>
+                            {liberando ? "Liberando..." : "Sí, liberar"}
+                          </button>
+                          <button type="button" onClick={() => setConfirmarLiberar(false)}
+                            style={{ background: "#F5F5F5", border: 0, borderRadius: "999px", color: "#0B0B0B", cursor: "pointer", fontSize: "13px", fontWeight: "700", padding: "10px 18px" }}>
+                            No
+                          </button>
+                        </div>
+                      ) : (
+                        <button type="button" onClick={() => setConfirmarLiberar(true)}
+                          style={{ background: "#0B0B0B", border: 0, borderRadius: "999px", color: "#FFFFFF", cursor: "pointer", fontSize: "13px", fontWeight: "800", padding: "10px 20px" }}>
+                          Liberar acceso
+                        </button>
+                      )
+                    )}
                     {puedeInvitar && (
                       <button type="button" disabled={invitandoId === clienteEditado.id} onClick={() => void invitar(clienteEditado)}
                         style={{ background: "#0B0B0B", border: 0, borderRadius: "999px", color: "#FFFFFF", cursor: "pointer", fontSize: "13px", fontWeight: "800", opacity: invitandoId === clienteEditado.id ? 0.6 : 1, padding: "10px 20px" }}>
@@ -427,6 +504,16 @@ export default function ClientesAdminPaginados() {
                   <span style={{ background: activo ? "#E1F5EE" : "#F5F5F5", borderRadius: "20px", color: activo ? "#085041" : "#555", fontSize: "11px", fontWeight: "700", padding: "3px 10px" }}>
                     {cliente.estado?.toUpperCase()}
                   </span>
+                  {(() => {
+                    const faltan = faltantesPerfil(cliente);
+                    const completo = Boolean(cliente.perfil_completado_en);
+                    return (
+                      <span title={completo ? "El cliente completó su perfil" : faltan.length ? `Falta: ${faltan.join(", ")}` : "Aún no confirma su perfil"}
+                        style={{ background: completo ? "#E1F5EE" : "#FFF4E5", borderRadius: "20px", color: completo ? "#085041" : "#9A5B00", fontSize: "11px", fontWeight: "700", padding: "3px 10px" }}>
+                        {completo ? "PERFIL COMPLETO" : "PERFIL PENDIENTE"}
+                      </span>
+                    );
+                  })()}
                   <button type="button" onClick={() => void abrirHistorial(cliente)} style={botonAntiguo("#F5F5F5", "#0B0B0B")}>Ver Historial</button>
                   <button type="button" onClick={() => abrirEdicion(cliente)} style={botonAntiguo("#F5F5F5", "#0B0B0B")}>Editar</button>
                 </div>

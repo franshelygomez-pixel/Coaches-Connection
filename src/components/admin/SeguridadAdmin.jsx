@@ -3,6 +3,7 @@ import { supabase } from "../../supabaseClient";
 import ModalInvitacion from "./ModalInvitacion";
 import Aviso from "../Aviso";
 import { invitacionEstaVigente } from "../../utils/seguridad";
+import { InsigniaPerfil, datosPerfil } from "../../utils/perfilCompleto";
 
 const fechaLegible = (valor) => valor
   ? new Date(valor).toLocaleString("es-DO", { dateStyle: "medium", timeStyle: "short" })
@@ -43,7 +44,8 @@ export default function SeguridadAdmin({ seccion }) {
       console.error(primerError);
       setError("No se pudo cargar la información de administradores. Verifica que la migración de roles esté aplicada.");
     } else {
-      setUsuarios(respuestaAdmins.data || []);
+      const perfiles = await datosPerfil(supabase);
+      setUsuarios((respuestaAdmins.data || []).map((u) => ({ ...u, ...(perfiles[u.id] || {}) })));
       setInvitaciones(respuestaInvitaciones.data || []);
     }
     setCargando(false);
@@ -229,6 +231,7 @@ export default function SeguridadAdmin({ seccion }) {
                   </div>
                   <div style={{ alignItems: "center", display: "flex", flexWrap: "wrap", gap: "8px" }}>
                     {estadoCuenta(usuario)}
+                    {usuario.rol === "admin" && !tieneInvitacionPendiente(usuario) && <InsigniaPerfil persona={usuario} />}
                     {usuario.rol === "admin" && ["activo", "inactivo"].includes(usuario.estado) && (
                       <button type="button" disabled={Boolean(bloqueo)} title={bloqueo || undefined} onClick={() => void cambiarEstadoAdmin(usuario)}
                         style={{ ...botonLista, cursor: bloqueo ? "not-allowed" : "pointer", opacity: bloqueo ? 0.5 : 1 }}>
