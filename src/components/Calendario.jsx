@@ -14,7 +14,23 @@ import {
 } from "../utils/agenda";
 import { horasDisponibles, TEXTO_HORARIO, validarHorarioLaboral } from "../utils/horario";
 
-const FORMULARIO_INICIAL = { titulo: "", fecha: "", hora: "", descripcion: "", clienteId: "" };
+const TIPOS_EVENTO = [
+  { valor: "reunion", etiqueta: "Reunión con cliente", fondo: "#0B0B0B", texto: "#FFFFFF", requiereCliente: true },
+  { valor: "evaluacion", etiqueta: "Evaluación física", fondo: "#E11D2E", texto: "#FFFFFF", requiereCliente: true },
+  { valor: "recordatorio", etiqueta: "Recordatorio", fondo: "#6B6B6B", texto: "#FFFFFF", requiereCliente: false },
+  { valor: "personal", etiqueta: "Personal", fondo: "#D4D4D4", texto: "#0B0B0B", requiereCliente: false },
+];
+const TIPO_SESION = { valor: "sesion", etiqueta: "Sesión", fondo: "#E11D2E", texto: "#FFFFFF" };
+const tipoDe = (valor) => TIPOS_EVENTO.find((t) => t.valor === valor) || TIPO_SESION;
+
+const RECORDATORIOS = [
+  { minutos: "", etiqueta: "Sin recordatorio" },
+  { minutos: 60, etiqueta: "1 hora antes" },
+  { minutos: 1440, etiqueta: "1 día antes" },
+  { minutos: 2880, etiqueta: "2 días antes" },
+];
+
+const FORMULARIO_INICIAL = { titulo: "", fecha: "", hora: "", descripcion: "", clienteId: "", tipo: "reunion", recordatorioMin: "" };
 
 const adaptarEventoInterno = (evento) => ({
   id: evento.id,
@@ -28,6 +44,11 @@ const adaptarEventoInterno = (evento) => ({
   clienteNombre: evento.clientes
     ? `${evento.clientes.nombre || ""} ${evento.clientes.apellido || ""}`.trim()
     : "",
+  tipo: evento.tipo || "sesion",
+  recordatorioMin: evento.recordatorio_min || "",
+  backgroundColor: tipoDe(evento.tipo).fondo,
+  borderColor: tipoDe(evento.tipo).fondo,
+  textColor: tipoDe(evento.tipo).texto,
   fuente: "supabase",
 });
 
@@ -48,7 +69,7 @@ export default function Calendario({ usuario }) {
     if (!coachId) return;
     const { data, error: errorConsulta } = await supabase
       .from("eventos")
-      .select("id,titulo,descripcion,inicio,fin,fecha,coach_id,cliente_id,clientes(nombre,apellido)")
+      .select("id,titulo,descripcion,inicio,fin,fecha,coach_id,cliente_id,tipo,recordatorio_min,clientes(nombre,apellido)")
       .eq("coach_id", coachId)
       .order("inicio", { ascending: true });
 
@@ -138,6 +159,8 @@ export default function Calendario({ usuario }) {
       hora: horaLocalDe(evento.start),
       descripcion: evento.description || "",
       clienteId: evento.clienteId || "",
+      tipo: TIPOS_EVENTO.some((t) => t.valor === evento.tipo) ? evento.tipo : "reunion",
+      recordatorioMin: evento.recordatorioMin || "",
     });
     setMostrarForm(true);
   };
@@ -162,7 +185,20 @@ export default function Calendario({ usuario }) {
       setError(errorHorario);
       return;
     }
+    const tipoElegido = tipoDe(formulario.tipo);
+    if (tipoElegido.requiereCliente && !formulario.clienteId) {
+      setError(`Selecciona el cliente para ${tipoElegido.etiqueta.toLowerCase()}.`);
+      return;
+    }
+    const minutosAviso = formulario.clienteId && formulario.recordatorioMin ? Number(formulario.recordatorioMin) : null;
+    if (minutosAviso && Date.parse(inicio) - minutosAviso * 60000 < Date.now() - 60000) {
+      setError("Ese recordatorio ya habría pasado. Elige un aviso más corto o una fecha más lejana.");
+      return;
+    }
     const datosInternos = {
+      tipo: formulario.tipo,
+      recordatorio_min: minutosAviso,
+      recordatorio_enviado_en: null,
       titulo: formulario.titulo.trim(),
       descripcion: formulario.descripcion.trim(),
       inicio,
@@ -261,9 +297,19 @@ export default function Calendario({ usuario }) {
       {mostrarForm && (
         <form onSubmit={guardarEvento} style={{ background: "#FFF", border: "1px solid #E5E5E5", borderRadius: "12px", marginBottom: "20px", padding: "24px" }}>
           <h4 style={{ fontSize: "15px", margin: "0 0 16px" }}>{editandoId ? "Editar evento" : "Crear nuevo evento"}</h4>
+          <div role="group" aria-label="Tipo de evento" style={{ display: "flex", flexWrap: "wrap", gap: "8px", marginBottom: "12px" }}>
+            {TIPOS_EVENTO.map((t) => {
+              const activo = formulario.tipo === t.valor;
+              return (
+                <button key={t.valor} type="button" aria-pressed={activo} onClick={() => setFormulario((actual) => ({ ...actual, tipo: t.valor }))} style={{ background: activo ? "#0B0B0B" : "#FFF", border: activo ? "1px solid #0B0B0B" : "1px solid #D5D5D5", borderRadius: "8px", color: activo ? "#FFF" : "#0B0B0B", cursor: "pointer", fontSize: "12px", fontWeight: "700", padding: "8px 14px" }}>
+                  {t.etiqueta}
+                </button>
+              );
+            })}
+          </div>
           <input aria-label="Título del evento" maxLength={100} placeholder="Título del evento *" value={formulario.titulo} onChange={(e) => setFormulario((actual) => ({ ...actual, titulo: e.target.value }))} style={estiloInput} />
           <select aria-label="Cliente relacionado" value={formulario.clienteId} onChange={(e) => setFormulario((actual) => ({ ...actual, clienteId: e.target.value }))} style={estiloInput}>
-            <option value="">Sin cliente relacionado</option>
+            <option value="">{tipoDe(formulario.tipo).requiereCliente ? "Selecciona un cliente *" : "Sin cliente relacionado"}</option>
             {clientes.map((cliente) => <option key={cliente.id} value={cliente.id}>{cliente.nombre} {cliente.apellido}</option>)}
           </select>
           <div style={{ display: "flex", flexWrap: "wrap", gap: "10px" }}>
@@ -286,6 +332,14 @@ export default function Calendario({ usuario }) {
               )}
             </div>
           </div>
+          {formulario.clienteId && (
+            <div style={{ marginBottom: "10px" }}>
+              <select aria-label="Recordatorio al cliente" value={formulario.recordatorioMin} onChange={(e) => setFormulario((actual) => ({ ...actual, recordatorioMin: e.target.value }))} style={{ ...estiloInput, marginBottom: "4px" }}>
+                {RECORDATORIOS.map((r) => <option key={r.minutos} value={r.minutos}>{r.minutos ? `Avisar al cliente ${r.etiqueta}` : "No avisar al cliente"}</option>)}
+              </select>
+              <p style={{ color: "#888", fontSize: "11px", margin: 0 }}>El cliente recibe una notificación en su portal.</p>
+            </div>
+          )}
           <textarea aria-label="Descripción del evento" maxLength={500} placeholder="Descripción (opcional)" rows={3} value={formulario.descripcion} onChange={(e) => setFormulario((actual) => ({ ...actual, descripcion: e.target.value }))} style={{ ...estiloInput, resize: "vertical" }} />
           <div style={{ display: "flex", flexWrap: "wrap", gap: "10px" }}>
             <button type="submit" disabled={procesando} style={{ ...estiloBoton("#0B0B0B", "#FFFFFF"), flex: "1 1 150px", fontSize: "14px", padding: "12px" }}>
@@ -334,10 +388,11 @@ export default function Calendario({ usuario }) {
                 {eventosDia.map((evento) => (
                   <article key={evento.id} style={{ background: "#F5F5F5", borderRadius: "10px", padding: "12px 14px" }}>
                     <div style={{ alignItems: "center", display: "flex", gap: "8px", marginBottom: "5px" }}>
+                      <span style={{ background: tipoDe(evento.tipo).fondo, borderRadius: "6px", color: tipoDe(evento.tipo).texto, fontSize: "10px", fontWeight: "700", padding: "3px 8px", textTransform: "uppercase" }}>{tipoDe(evento.tipo).etiqueta}</span>
                       {evento.start?.includes("T") && <span style={{ background: "#FDECEE", border: "1px solid #E11D2E", borderRadius: "6px", fontSize: "11px", fontWeight: "900", padding: "3px 8px" }}>{new Date(evento.start).toLocaleTimeString("es-DO", { hour: "2-digit", minute: "2-digit", timeZone: ZONA_HORARIA_APLICACION })}</span>}
                     </div>
                     <p style={{ fontSize: "13px", fontWeight: "700", margin: 0 }}>{evento.title}</p>
-                    {evento.clienteNombre && <p style={{ color: "#555", fontSize: "11px", margin: "4px 0 0" }}>Cliente: {evento.clienteNombre}</p>}
+                    {evento.clienteNombre && <p style={{ color: "#555", fontSize: "11px", margin: "4px 0 0" }}>Cliente: {evento.clienteNombre}{evento.recordatorioMin ? ` · aviso ${RECORDATORIOS.find((r) => r.minutos === evento.recordatorioMin)?.etiqueta || ""}` : ""}</p>}
                     {evento.description && <p style={{ color: "#666", fontSize: "11px", margin: "5px 0 0", overflowWrap: "anywhere" }}>{evento.description}</p>}
                     {evento.coachId === coachId && (
                       <div style={{ display: "flex", gap: "8px", marginTop: "10px" }}>

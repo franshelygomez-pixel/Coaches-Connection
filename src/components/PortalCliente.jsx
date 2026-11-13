@@ -143,13 +143,13 @@ export default function PortalCliente({ datosUsuario, seccion, setSeccion }) {
         .select("id,nombre,apellido,email,telefono,estado,objetivo,plan,rutina_id,rutinas(id,nombre,nivel,contenido)")
         .eq("id", clienteId).maybeSingle(),
       supabase.from("sesiones_entrenamiento")
-        .select("id,titulo,inicio,fin,estado,asistencia,observaciones,rutinas(nombre)")
+        .select("id,titulo,inicio,fin,estado,asistencia,observaciones,rutina_id,rutinas(nombre)")
         .eq("cliente_id", clienteId).order("inicio", { ascending: false }).limit(200),
       supabase.from("mediciones")
         .select("id,fecha,peso,estatura,cintura,cadera,imc,icc")
         .eq("cliente_id", clienteId).order("fecha", { ascending: false }).limit(100),
       supabase.from("historial_rutinas")
-        .select("id,nombre_rutina,nivel,contenido,estado,asignada_en,finalizada_en")
+        .select("id,rutina_id,nombre_rutina,nivel,contenido,estado,asignada_en,finalizada_en,fecha_fin")
         .eq("cliente_id", clienteId).order("asignada_en", { ascending: false }),
       supabase.from("consentimientos_datos")
         .select("id,tipo,estado,version_documento,otorgado_en,revocado_en,creado_en")
@@ -252,11 +252,16 @@ export default function PortalCliente({ datosUsuario, seccion, setSeccion }) {
 
   const renderResumen = () => {
     const tarjetas = [
-      ["Próximas sesiones", proximas.length, "#0B0B0B"],
-      ["Sesiones registradas", resumen.total, "#69469B"],
-      ["Asistencias", resumen.presentes, "#1D9E75"],
-      ["Participación", `${resumen.porcentajeAsistencia}%`, "#C4161F"],
+      ["Próximas sesiones", proximas.length, "proximas"],
+      ["Sesiones registradas", resumen.total, "todas"],
+      ["Asistencias", resumen.presentes, "completada"],
+      ["Participación", `${resumen.porcentajeAsistencia}%`, "todas"],
     ];
+    const abrirSesiones = (filtro) => {
+      setFiltroSesiones(filtro);
+      setLimiteSesiones(10);
+      if (typeof setSeccion === "function") setSeccion("Mis sesiones");
+    };
     return (
       <>
         <div style={{ background: "#0B0B0B", borderRadius: "14px", color: "#FFF", marginBottom: "20px", padding: "24px 28px" }}>
@@ -272,12 +277,18 @@ export default function PortalCliente({ datosUsuario, seccion, setSeccion }) {
           )}
         </div>
 
-        <div style={{ display: "grid", gap: "14px", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", marginBottom: "20px" }}>
-          {tarjetas.map(([etiqueta, valor, color]) => (
-            <div key={etiqueta} style={{ ...tarjeta, borderTop: `4px solid ${color}`, padding: "16px 20px" }}>
-              <p style={{ color: "#888", fontSize: "11px", fontWeight: "700", margin: 0, textTransform: "uppercase" }}>{etiqueta}</p>
-              <strong style={{ color, display: "block", fontSize: "30px", fontWeight: "900", marginTop: "6px" }}>{valor}</strong>
-            </div>
+        <div style={{ display: "grid", gap: "16px", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", marginBottom: "20px" }}>
+          {tarjetas.map(([etiqueta, valor, filtro]) => (
+            <button
+              type="button"
+              key={etiqueta}
+              onClick={() => abrirSesiones(filtro)}
+              aria-label={`${etiqueta}: ${valor}. Ver en Mis sesiones`}
+              style={{ ...tarjeta, cursor: "pointer", textAlign: "left", width: "100%" }}
+            >
+              <p style={{ fontSize: "12px", color: "#888", marginBottom: "8px" }}>{etiqueta}</p>
+              <p style={{ fontSize: "36px", fontWeight: "900", color: "#E11D2E", margin: 0 }}>{valor}</p>
+            </button>
           ))}
         </div>
 
@@ -336,23 +347,61 @@ export default function PortalCliente({ datosUsuario, seccion, setSeccion }) {
     );
   };
 
+  const ejerciciosDe = (rutina) => (Array.isArray(rutina.contenido) ? rutina.contenido : []);
+  const rutinasActivas = historial.some((item) => item.estado === "activa")
+    ? historial.filter((item) => item.estado === "activa").map((item) => ({ id: item.id, rutinaId: item.rutina_id, nombre: item.nombre_rutina, nivel: item.nivel, contenido: item.contenido, fechaFin: item.fecha_fin }))
+    : cliente.rutinas
+      ? [{ id: "actual", rutinaId: cliente.rutina_id, nombre: cliente.rutinas.nombre, nivel: cliente.rutinas.nivel, contenido: cliente.rutinas.contenido }]
+      : [];
+
+  // Días y hora en que le toca cada rutina, según sus sesiones programadas.
+  const ZONA = "America/Santo_Domingo";
+  const planDeRutina = (rutina) => {
+    const delaRutina = proximas.filter((sesion) => rutina.rutinaId && sesion.rutina_id === rutina.rutinaId);
+    if (delaRutina.length === 0) return null;
+    const dias = [];
+    delaRutina.forEach((sesion) => {
+      const dia = new Date(sesion.inicio).toLocaleDateString("es-DO", { weekday: "long", timeZone: ZONA });
+      if (!dias.includes(dia)) dias.push(dia);
+    });
+    const horas = [...new Set(delaRutina.map((sesion) => new Date(sesion.inicio).toLocaleTimeString("es-DO", { hour: "numeric", minute: "2-digit", timeZone: ZONA })))];
+    const proxima = new Date(delaRutina[0].inicio).toLocaleDateString("es-DO", { weekday: "long", day: "numeric", month: "long", timeZone: ZONA });
+    return { dias, horas, proxima };
+  };
+
   const renderRutina = () => (
     <>
-      <Encabezado titulo="Mi rutina" descripcion="Consulta la versión de la rutina que tienes asignada actualmente." />
-      {!cliente.rutinas ? (
+      <Encabezado titulo="Mi rutina" descripcion="Consulta las rutinas que tienes asignadas actualmente." />
+      {rutinasActivas.length === 0 ? (
         <Vacio titulo="Aún no tienes rutina" texto="Tu entrenador todavía no te ha asignado una rutina. Cuando lo haga, aparecerá aquí." />
       ) : (
-        <>
+        rutinasActivas.map((rutina) => (
+          <div key={rutina.id} style={{ marginBottom: "24px" }}>
           <div style={{ background: "#0B0B0B", borderRadius: "14px", color: "#FFF", marginBottom: "16px", padding: "22px 26px" }}>
             <p style={{ color: "#FF5A64", fontSize: "11px", fontWeight: "800", letterSpacing: "1.5px", margin: 0, textTransform: "uppercase" }}>Rutina asignada</p>
-            <h4 style={{ fontSize: "22px", fontWeight: "900", margin: "6px 0 10px" }}>{cliente.rutinas.nombre}</h4>
+            <h4 style={{ fontSize: "22px", fontWeight: "900", margin: "6px 0 10px" }}>{rutina.nombre}</h4>
             <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
-              <span style={{ background: "#E11D2E", borderRadius: "20px", color: "#FFFFFF", fontSize: "11px", fontWeight: "800", padding: "4px 12px" }}>Nivel: {cliente.rutinas.nivel || "No especificado"}</span>
-              <span style={{ background: "#2C2C2C", borderRadius: "20px", color: "#EEE", fontSize: "11px", fontWeight: "700", padding: "4px 12px" }}>{ejercicios.length} ejercicios</span>
+              <span style={{ background: "#E11D2E", borderRadius: "20px", color: "#FFFFFF", fontSize: "11px", fontWeight: "800", padding: "4px 12px" }}>Nivel: {rutina.nivel || "No especificado"}</span>
+              <span style={{ background: "#2C2C2C", borderRadius: "20px", color: "#EEE", fontSize: "11px", fontWeight: "700", padding: "4px 12px" }}>{ejerciciosDe(rutina).length} ejercicios</span>
             </div>
+            {(() => {
+              const plan = planDeRutina(rutina);
+              if (!plan) return <p style={{ color: "#AAA", fontSize: "13px", margin: "14px 0 0" }}>Tu entrenador aún no ha programado los días de esta rutina.</p>;
+              return (
+                <div style={{ borderTop: "1px solid #2C2C2C", marginTop: "16px", paddingTop: "14px" }}>
+                  <p style={{ color: "#FFF", fontSize: "14px", fontWeight: "800", margin: 0, textTransform: "capitalize" }}>
+                    {plan.dias.join(", ")} <span style={{ textTransform: "none" }}>a las {plan.horas.join(" y ")}</span>
+                  </p>
+                  <p style={{ color: "#AAA", fontSize: "12px", margin: "6px 0 0" }}>
+                    Próxima sesión: <span style={{ textTransform: "capitalize" }}>{plan.proxima}</span>
+                    {rutina.fechaFin ? ` · Termina el ${new Date(`${rutina.fechaFin}T12:00:00`).toLocaleDateString("es-DO", { day: "2-digit", month: "2-digit", year: "numeric" })}` : ""}
+                  </p>
+                </div>
+              );
+            })()}
           </div>
           <div style={{ display: "grid", gap: "10px" }}>
-            {ejercicios.length === 0 ? <Vacio titulo="Sin ejercicios registrados" texto="Esta rutina todavía no tiene ejercicios cargados." /> : ejercicios.map((item, indice) => (
+            {ejerciciosDe(rutina).length === 0 ? <Vacio titulo="Sin ejercicios registrados" texto="Esta rutina todavía no tiene ejercicios cargados." /> : ejerciciosDe(rutina).map((item, indice) => (
               <article key={`${item.ejercicio || "ejercicio"}-${indice}`} style={{ ...tarjeta, alignItems: "flex-start", display: "flex", gap: "16px", padding: "16px 20px" }}>
                 <div aria-hidden="true" style={{ alignItems: "center", background: "#E11D2E", borderRadius: "50%", color: "#FFFFFF", display: "flex", flexShrink: 0, fontSize: "14px", fontWeight: "900", height: "36px", justifyContent: "center", width: "36px" }}>{indice + 1}</div>
                 <div style={{ flex: 1, minWidth: 0 }}>
@@ -369,7 +418,8 @@ export default function PortalCliente({ datosUsuario, seccion, setSeccion }) {
               </article>
             ))}
           </div>
-        </>
+          </div>
+        ))
       )}
 
       <h4 style={{ ...titulo4, marginTop: "28px" }}>Historial de asignaciones</h4>
@@ -380,7 +430,7 @@ export default function PortalCliente({ datosUsuario, seccion, setSeccion }) {
               <strong style={{ color: "#0B0B0B", fontSize: "14px" }}>{item.nombre_rutina}</strong>
               <p style={{ color: "#888", fontSize: "12px", margin: "3px 0 0" }}>
                 Asignada el {fechaLegible(item.asignada_en)} · Nivel: {item.nivel || "No especificado"}
-                {item.finalizada_en ? ` · Finalizada el ${fechaLegible(item.finalizada_en)}` : ""}
+                {item.finalizada_en ? ` · Completada el ${fechaLegible(item.finalizada_en)}` : ""}
               </p>
             </div>
             <Insignia valor={item.estado} />

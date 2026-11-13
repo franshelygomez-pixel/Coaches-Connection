@@ -1,66 +1,49 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { supabase, traducirErrorSupabase } from "../../supabaseClient";
-import { fechaLocalISO } from "../../utils/reportes";
-
-const haceDias = (cantidad) => {
-  const fecha = new Date();
-  fecha.setDate(fecha.getDate() - cantidad);
-  return fechaLocalISO(fecha);
-};
 
 export default function InicioAdminFase4({ setSeccion }) {
-  const [resumen, setResumen] = useState({});
   const [usuarios, setUsuarios] = useState([]);
   const [clientes, setClientes] = useState([]);
-  const [entrenadoresActivos, setEntrenadoresActivos] = useState(0);
   const [cargando, setCargando] = useState(true);
   const [error, setError] = useState("");
 
-  useEffect(() => {
-    const cargar = async () => {
-      const [resultadoResumen, resultadoUsuarios, resultadoClientes, resultadoEntrenadores] = await Promise.all([
-        supabase.rpc("reporte_resumen_operativo", {
-          p_desde: haceDias(29), p_hasta: fechaLocalISO(), p_coach_id: null,
-        }),
-        supabase.from("usuarios")
-          .select("id,nombre,apellido,rol,estado,creado_en")
-          .order("creado_en", { ascending: false }).limit(5),
-        supabase.from("clientes")
-          .select("id,nombre,apellido,estado,creado_en")
-          .order("creado_en", { ascending: false }).limit(5),
-        supabase.from("entrenadores").select("id", { count: "exact", head: true }).eq("estado", "activo"),
-      ]);
-      const fallo = resultadoResumen.error || resultadoUsuarios.error || resultadoClientes.error || resultadoEntrenadores.error;
-      if (fallo) {
-        setError(traducirErrorSupabase(fallo));
-      } else {
-        setResumen(resultadoResumen.data || {});
-        setUsuarios(resultadoUsuarios.data || []);
-        setClientes(resultadoClientes.data || []);
-        setEntrenadoresActivos(resultadoEntrenadores.count || 0);
-      }
-      setCargando(false);
-    };
-    const temporizador = window.setTimeout(() => void cargar(), 0);
-    return () => window.clearTimeout(temporizador);
+  const cargar = useCallback(async () => {
+    const [resultadoUsuarios, resultadoClientes] = await Promise.all([
+      supabase.from("usuarios")
+        .select("id,nombre,apellido,rol,estado,creado_en")
+        .order("creado_en", { ascending: false }).limit(5),
+      supabase.from("clientes")
+        .select("id,nombre,apellido,estado,creado_en")
+        .order("creado_en", { ascending: false }).limit(5),
+    ]);
+    const fallo = resultadoUsuarios.error || resultadoClientes.error;
+    if (fallo) {
+      setError(traducirErrorSupabase(fallo));
+    } else {
+      setError("");
+      setUsuarios(resultadoUsuarios.data || []);
+      setClientes(resultadoClientes.data || []);
+    }
+    setCargando(false);
   }, []);
 
-  if (cargando) return <p style={{ color: "#777", padding: "40px", textAlign: "center" }}>Cargando resumen...</p>;
+  // Datos en vivo: se actualiza con cualquier alta o cambio de cuentas y clientes.
+  useEffect(() => {
+    const inicio = window.setTimeout(() => void cargar(), 0);
+    let canal = supabase.channel("inicio-admin-actividad");
+    ["usuarios", "clientes", "entrenadores", "administradores"].forEach((tabla) => {
+      canal = canal.on("postgres_changes", { event: "*", schema: "public", table: tabla }, () => void cargar());
+    });
+    canal.subscribe();
+    const intervalo = window.setInterval(() => void cargar(), 60_000);
+    return () => {
+      window.clearTimeout(inicio);
+      window.clearInterval(intervalo);
+      void supabase.removeChannel(canal);
+    };
+  }, [cargar]);
 
-  const tarjetas = [
-    ["Clientes registrados", resumen.clientes_total || 0, "#378ADD", "#EEF5FF", "Clientes"],
-    ["Entrenadores", entrenadoresActivos, "#1D9E75", "#E1F5EE", "Entrenadores"],
-    ["Sesiones últimos 30 días", resumen.sesiones_total || 0, "#69469B", "#F7F0FF", "Reportes", { dias: 30 }],
-    ["Sesiones completadas", resumen.sesiones_completadas || 0, "#126B2D", "#EEFFF3", "Reportes", { dias: 30, estado: "completada" }],
-  ];
-
-  // Deja el filtro para que Reportes abra ya en el periodo y estado de la tarjeta.
-  const abrirTarjeta = (destino, filtro) => {
-    try {
-      if (filtro) window.sessionStorage.setItem("reportes:filtro-inicial", JSON.stringify(filtro));
-    } catch { /* sin almacenamiento: Reportes abre con sus valores por defecto */ }
-    setSeccion(destino);
-  };
+  if (cargando) return <p style={{ color: "#777", padding: "40px", textAlign: "center" }}>Cargando actividad reciente...</p>;
 
   const tarjetaBase = { background: "#FFFFFF", border: "0.5px solid #E5E5E5", borderRadius: "12px", padding: "20px 24px" };
   const avatar = (nombre) => (
@@ -74,7 +57,7 @@ export default function InicioAdminFase4({ setSeccion }) {
   const colorEstado = (estado) => {
     const clave = `${estado || ""}`.toLowerCase();
     if (clave === "activo") return ["#E1F5EE", "#085041"];
-    if (clave === "pendiente" || clave === "en evaluación") return ["#FDECEE", "#9B1C24"];
+    if (clave === "pendiente") return ["#FDECEE", "#9B1C24"];
     return ["#F5F5F5", "#555"];
   };
   const titulo = (texto, accion, destino) => (
@@ -86,21 +69,9 @@ export default function InicioAdminFase4({ setSeccion }) {
 
   return (
     <section>
-      <header style={{ marginBottom: "22px" }}>
-        <h3 style={{ color: "#0B0B0B", fontSize: "20px", fontWeight: "900", margin: 0 }}>Resumen administrativo</h3>
-        <p style={{ color: "#888", fontSize: "13px", margin: "4px 0 0" }}>Así va tu gimnasio en los últimos 30 días.</p>
-      </header>
+      <h4 style={{ color: "#0B0B0B", fontSize: "16px", fontWeight: "900", margin: "28px 0 4px" }}>Actividad reciente</h4>
+      <p style={{ color: "#888", fontSize: "13px", margin: "0 0 14px" }}>Las últimas cuentas de personal y los últimos clientes registrados.</p>
       {error && <p role="alert" style={{ background: "#FFF0F0", borderRadius: "8px", color: "#B00020", padding: "12px" }}>{error}</p>}
-
-      <div style={{ display: "grid", gap: "14px", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", marginBottom: "22px" }}>
-        {tarjetas.map(([etiqueta, valor, color, fondo, destino, filtro]) => (
-          <button key={etiqueta} type="button" onClick={() => abrirTarjeta(destino, filtro)} style={{ ...tarjetaBase, borderTop: `4px solid ${color}`, cursor: "pointer", textAlign: "left" }}>
-            <span style={{ color: "#888", display: "block", fontSize: "11px", fontWeight: "700", textTransform: "uppercase" }}>{etiqueta}</span>
-            <strong style={{ color, display: "block", fontSize: "32px", fontWeight: "900", marginTop: "6px" }}>{valor}</strong>
-            <span style={{ background: fondo, borderRadius: "20px", color, display: "inline-block", fontSize: "10px", fontWeight: "800", marginTop: "6px", padding: "2px 9px" }}>Ver detalle</span>
-          </button>
-        ))}
-      </div>
 
       <div style={{ display: "grid", gap: "18px", gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))" }}>
         <article style={tarjetaBase}>

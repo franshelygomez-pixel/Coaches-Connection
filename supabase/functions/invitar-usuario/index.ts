@@ -91,12 +91,13 @@ Deno.serve(async (req) => {
   if (errorInvitacion) return responder({ error: errorInvitacion.message }, 400);
 
   // 5. Enviar el correo (el trigger crea el perfil al crearse la cuenta)
-  const { error: errorEnvio } = await admin.auth.admin.inviteUserByEmail(email, { redirectTo: sitio });
+  const { data: envio, error: errorEnvio } = await admin.auth.admin.inviteUserByEmail(email, { redirectTo: sitio });
+  console.log("invitar-usuario", JSON.stringify({ rol, email, sitio, enviado: !errorEnvio, usuario: envio?.user?.id ?? null, error: errorEnvio?.message ?? null }));
   if (errorEnvio) {
     await admin.from("invitaciones_acceso")
       .update({ estado: "revocada", revocado_en: new Date().toISOString() }).eq("id", invitacion.id);
     return responder({ error: `No se pudo enviar el correo: ${errorEnvio.message}` }, 502);
   }
 
-  return responder({ ok: true, invitacion_id: invitacion.id, email, vence_en: vence });
+  return responder({ ok: true, rol, invitacion_id: invitacion.id, usuario_id: envio?.user?.id ?? null, email, vence_en: vence });
 });

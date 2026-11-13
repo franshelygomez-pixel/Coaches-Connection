@@ -11,6 +11,41 @@ export const ESTADOS_ASISTENCIA = Object.freeze({
   JUSTIFICADA: "justificada",
 });
 
+export const LIMITE_PERSONAS_POR_RUTINA_Y_HORARIO = 2;
+
+export function validarLimitePersonasRutinaHorario(cantidadPersonas, rutinaId) {
+  if (!rutinaId) return "";
+  if (Number(cantidadPersonas) >= LIMITE_PERSONAS_POR_RUTINA_Y_HORARIO) {
+    return "Ya hay dos clientes programados con esta rutina en ese horario. Elige otra hora o una rutina diferente.";
+  }
+  return "";
+}
+
+export async function consultarPersonasRutinaHorario(clienteSupabase, {
+  coachId,
+  clienteId,
+  rutinaId,
+  inicio,
+  fin,
+}) {
+  if (!coachId || !clienteId || !rutinaId || !inicio || !fin) {
+    return { cantidadPersonas: 0, error: null };
+  }
+
+  const { data, error } = await clienteSupabase
+    .from("sesiones_entrenamiento")
+    .select("cliente_id")
+    .eq("coach_id", coachId)
+    .eq("rutina_id", rutinaId)
+    .eq("estado", ESTADOS_SESION.PROGRAMADA)
+    .lt("inicio", fin)
+    .gt("fin", inicio)
+    .neq("cliente_id", clienteId);
+
+  const personas = new Set((data || []).map((sesion) => sesion.cliente_id).filter(Boolean));
+  return { cantidadPersonas: personas.size, error: error || null };
+}
+
 export function validarSesion({ clienteId, titulo, fecha, hora, duracionMinutos }) {
   if (!clienteId) return "Selecciona un cliente.";
   if (`${titulo || ""}`.trim().length < 3) return "El título debe tener al menos 3 caracteres.";

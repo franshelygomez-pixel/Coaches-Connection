@@ -7,7 +7,7 @@ export { formatearCedula, validarCedulaDominicana } from "./utils/validaciones";
 const MODO_PRUEBA = import.meta.env.MODE === "test";
 const URL_CONFIGURADA = import.meta.env.VITE_SUPABASE_URL || "";
 const CLAVE_CONFIGURADA = import.meta.env.VITE_SUPABASE_ANON_KEY || "";
-export const VERSION_BACKEND_REQUERIDA = "1.4.0";
+export const VERSION_BACKEND_REQUERIDA = "1.4.1";
 
 export function validarConfiguracionSupabase(url, clave) {
   const urlLimpia = `${url || ""}`.trim();
@@ -62,7 +62,7 @@ export function traducirErrorSupabase(error, contexto = "operacion") {
     return "Supabase no tiene instalada la configuración requerida. Ejecuta completo supabase/setup.sql.";
   }
   if (codigo === "backend_outdated") {
-    return "La base de datos necesita la Fase 4. Ejecuta supabase/fase4_reportes_notificaciones.sql.";
+    return "La base de datos necesita la versión 1.4.1. Ejecuta supabase/limite_personas_rutina_horario.sql.";
   }
   if (codigo === "42702" || mensaje.includes("ambiguous") || mensaje.includes("vence_en is ambiguous")) {
     return "La función de invitaciones necesita la corrección 1.3.1. Ejecuta supabase/correccion_fase3_invitaciones.sql.";
@@ -85,6 +85,9 @@ export function traducirErrorSupabase(error, contexto = "operacion") {
   if (mensaje.includes("ya tiene acceso al portal")) {
     return "El cliente ya tiene una cuenta de acceso al portal.";
   }
+  if (mensaje.includes("limite_personas_rutina_horario") || mensaje.includes("dos clientes programados con esta rutina")) {
+    return "Ya hay dos clientes programados con esta rutina en ese horario. Elige otra hora o una rutina diferente.";
+  }
   if (codigo === "invalid_admin_invitation" || mensaje.includes("invitacion_admin_invalida")) {
     return "La invitación administrativa no es válida, no corresponde al correo o ya venció.";
   }
@@ -95,6 +98,16 @@ export function traducirErrorSupabase(error, contexto = "operacion") {
   if (mensaje.includes("email not confirmed")) return "Debes confirmar tu correo antes de iniciar sesión.";
   if (mensaje.includes("user already registered") || mensaje.includes("already") || codigo === "23505") {
     return "El correo o documento ya está registrado.";
+  }
+  if (codigo === "same_password" || mensaje.includes("different from the old password")) {
+    return "La nueva contraseña debe ser diferente a la que usas actualmente.";
+  }
+  if (codigo === "weak_password") {
+    const motivos = Array.isArray(error?.reasons) ? error.reasons : [];
+    if (motivos.includes("pwned")) return "Esa contraseña aparece en filtraciones públicas. Elige otra distinta.";
+    if (motivos.includes("characters")) return "La contraseña debe incluir mayúscula, minúscula, número y símbolo (por ejemplo ! # $ %).";
+    if (motivos.includes("length")) return "La contraseña es demasiado corta.";
+    return "La contraseña es demasiado débil. Usa mayúsculas, minúsculas, números y un símbolo.";
   }
   if (mensaje.includes("password")) return "La contraseña no cumple los requisitos de seguridad.";
   if (mensaje.includes("rate limit") || error?.status === 429) return "Se realizaron demasiados intentos. Espera unos minutos.";

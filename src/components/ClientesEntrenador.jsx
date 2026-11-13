@@ -6,6 +6,11 @@ import { obtenerRangoPagina } from "../utils/paginacion";
 import { perteneceAlCoach } from "../utils/permisos";
 import { normalizarCorreo } from "../utils/validaciones";
 import { fechaLocalDe } from "../utils/agenda";
+import { construirRangoSesion, crearSesionConRecordatorio } from "../utils/sesiones";
+import { TEXTO_HORARIO, sumarDias } from "../utils/horario";
+import {
+  DIAS_PLAN, DURACIONES_SESION, PERIODOS_PLAN, generarFechasPlan, horasComunes, planInicial, validarPlan,
+} from "../utils/planRutina";
 
 // --- Mismo lenguaje de diseño que InicioEntrenador.jsx ---
 const estiloCard = {
@@ -79,6 +84,24 @@ const adaptarCliente = (data) => ({
   coachId: data.coach_id || "",
 });
 
+// Rangos admitidos para una persona adulta en el gimnasio (antropometría). Un valor fuera de
+// estos rangos casi siempre es un error de digitación.
+const LIMITES_MEDICION = {
+  peso: { min: 20, max: 300, unidad: "kg", nombre: "El peso" },
+  estatura: { min: 100, max: 250, unidad: "cm", nombre: "La estatura" },
+  cintura: { min: 40, max: 200, unidad: "cm", nombre: "La cintura" },
+  cadera: { min: 50, max: 200, unidad: "cm", nombre: "La cadera" },
+};
+const FORMATO_MEDIDA = /^\d{1,3}(\.\d)?$/; // hasta 3 enteros y 1 decimal
+
+// Deja pasar solo dígitos y un punto decimal (la coma se convierte en punto), con 3 enteros y 1 decimal.
+const limpiarDecimal = (texto) => {
+  const limpio = `${texto}`.replace(",", ".").replace(/[^\d.]/g, "");
+  const [entero = "", ...resto] = limpio.split(".");
+  const parteEntera = entero.slice(0, 3);
+  return resto.length > 0 ? `${parteEntera}.${resto.join("").slice(0, 1)}` : parteEntera;
+};
+
 export default function ClientesEntrenador({ usuario }) {
   const [modoCrear, setModoCrear] = useState(false);
   const [filtroEstado, setFiltroEstado] = useState("Todos");
@@ -98,6 +121,12 @@ export default function ClientesEntrenador({ usuario }) {
   const [clienteParaAsignarRutina, setClienteParaAsignarRutina] = useState(null);
   const [rutinaSeleccionada, setRutinaSeleccionada] = useState("");
   const [asignandoRutina, setAsignandoRutina] = useState(false);
+  const [plan, setPlan] = useState(planInicial);
+  const [progresoPlan, setProgresoPlan] = useState("");
+  const [errorPlan, setErrorPlan] = useState("");
+  const [completandoRutina, setCompletandoRutina] = useState(null);
+  const [historialRutinas, setHistorialRutinas] = useState([]);
+  const [clienteParaCompletar, setClienteParaCompletar] = useState(null);
 
   const coachId = usuario?.id;
 
@@ -185,6 +214,18 @@ export default function ClientesEntrenador({ usuario }) {
       setClientes((data || []).map(adaptarCliente));
       setTotalResultados(count || 0);
       setError(null);
+      const ids = (data || []).map((c) => c.id);
+      if (ids.length > 0) {
+        const { data: filasHistorial, error: errHistorial } = await supabase
+          .from("historial_rutinas")
+          .select("id,cliente_id,rutina_id,nombre_rutina,nivel,estado,asignada_en,finalizada_en,fecha_fin")
+          .in("cliente_id", ids)
+          .order("asignada_en", { ascending: false });
+        if (errHistorial) console.error("Error al leer historial de rutinas:", errHistorial);
+        else setHistorialRutinas(filasHistorial || []);
+      } else {
+        setHistorialRutinas([]);
+      }
     }
     void cargarResumen();
     setCargando(false);
@@ -364,32 +405,34 @@ export default function ClientesEntrenador({ usuario }) {
     setGuardando(false);
   };
 
-  const handleCambiarEstado = async (cliente, nuevoEstado) => {
-    if (!perteneceAlCoach(cliente, coachId)) {
-      setError("No tienes permiso para modificar este cliente.");
-      return;
-    }
-
-    const { data, error: errUpdate } = await supabase
-      .from("clientes")
-      .update({ estado: nuevoEstado })
-      .eq("id", cliente.docId)
-      .eq("coach_id", coachId)
-      .select("id")
-      .maybeSingle();
-
-    if (errUpdate || !data) {
-      console.error("Error al actualizar estado:", errUpdate);
-      setError("No se pudo actualizar el estado del cliente.");
-    } else {
-      setClienteSeleccionado((prev) => (prev ? { ...prev, estado: nuevoEstado } : prev));
-      cargarClientes();
-    }
-  };
+  const rutinasActivasDe = (clienteId) => historialRutinas.filter((h) => h.cliente_id === clienteId && h.estado === "activa");
+  const historialDe = (clienteId) => historialRutinas.filter((h) => h.cliente_id === clienteId);
+  const fechaCorta = (valor) => (valor ? new Date(valor.length === 10 ? `${valor}T12:00:00` : valor).toLocaleDateString("es-DO", { day: "2-digit", month: "2-digit", year: "numeric", timeZone: "America/Santo_Domingo" }) : "--");
 
   const abrirAsignarRutina = (cliente) => {
     setClienteParaAsignarRutina(cliente);
-    setRutinaSeleccionada(cliente.rutinaId || "");
+    setRutinaSeleccionada("");
+    setPlan(planInicial());
+    setErrorPlan("");
+    setProgresoPlan("");
+  };
+
+  const cambiarPlan = (cambios) => {
+    setErrorPlan("");
+    setPlan((actual) => {
+      const nuevo = { ...actual, ...cambios };
+      if ("desde" in cambios || "periodo" in cambios) {
+        if (nuevo.periodo) nuevo.fin = sumarDias(nuevo.desde, Number(nuevo.periodo) - 1);
+      } else if ("fin" in cambios) {
+        nuevo.periodo = "";
+      }
+      if (nuevo.hora && !horasComunes(nuevo.dias, nuevo.duracion).includes(nuevo.hora)) nuevo.hora = "";
+      return nuevo;
+    });
+  };
+
+  const alternarDiaPlan = (numero) => {
+    cambiarPlan({ dias: plan.dias.includes(numero) ? plan.dias.filter((d) => d !== numero) : [...plan.dias, numero].sort() });
   };
 
   const handleConfirmarAsignacion = async (e) => {
@@ -398,6 +441,19 @@ export default function ClientesEntrenador({ usuario }) {
     if (!perteneceAlCoach(clienteParaAsignarRutina, coachId)) {
       setError("No tienes permiso para modificar este cliente.");
       return;
+    }
+
+    const rutinaElegida = rutinas.find((r) => r.docId === rutinaSeleccionada);
+    if (!rutinaSeleccionada) {
+      setErrorPlan("Selecciona la rutina que quieres asignar.");
+      return;
+    }
+    if (rutinaSeleccionada) {
+      const mensajePlan = validarPlan(plan);
+      if (mensajePlan) {
+        setErrorPlan(mensajePlan);
+        return;
+      }
     }
 
     setAsignandoRutina(true);
@@ -411,11 +467,66 @@ export default function ClientesEntrenador({ usuario }) {
       console.error("Error al asignar rutina:", errAsignar);
       setError("No se pudo asignar la rutina.");
     } else {
+      let fallidas = [];
+      let total = 0;
+      if (rutinaSeleccionada && rutinaElegida) {
+        const fechas = generarFechasPlan(plan);
+        total = fechas.length;
+        for (let i = 0; i < fechas.length; i += 1) {
+          setProgresoPlan(`Programando sesiones ${i + 1} de ${total}...`);
+          const fecha = fechas[i];
+          const rango = construirRangoSesion(fecha, plan.hora, plan.duracion);
+          const resultado = await crearSesionConRecordatorio(supabase, {
+            clienteId: clienteParaAsignarRutina.docId,
+            coachId,
+            titulo: `Rutina: ${rutinaElegida.nombre}`,
+            fecha,
+            inicio: rango.inicio,
+            fin: rango.fin,
+            rutinaId: rutinaSeleccionada,
+            observaciones: "",
+          });
+          if (resultado.errorSesion || resultado.errorRecordatorio) {
+            fallidas.push({ fecha, motivo: traducirErrorSupabase(resultado.errorSesion || resultado.errorRecordatorio) });
+          }
+        }
+        setProgresoPlan("");
+        const { error: errorFin } = await supabase.rpc("fijar_fin_rutina", {
+          p_cliente_id: clienteParaAsignarRutina.docId,
+          p_rutina_id: rutinaSeleccionada,
+          p_fecha_fin: plan.fin,
+        });
+        if (errorFin) fallidas.push({ fecha: plan.fin, motivo: "no se pudo programar el aviso de fin de rutina" });
+      }
       setClienteParaAsignarRutina(null);
       setRutinaSeleccionada("");
+      if (fallidas.length > 0) {
+        setError(`Rutina asignada. Se programaron ${total - fallidas.length} de ${total} sesiones. No se pudieron crear: ${fallidas.map((f) => `${f.fecha} (${f.motivo})`).join("; ")}`);
+      }
       cargarClientes();
     }
     setAsignandoRutina(false);
+  };
+
+  const handleCompletarRutina = async (cliente, rutinaActiva) => {
+    if (!perteneceAlCoach(cliente, coachId)) {
+      setError("No tienes permiso para modificar este cliente.");
+      return;
+    }
+    if (!window.confirm(`¿Marcar la rutina "${rutinaActiva.nombre_rutina}" de ${cliente.nombre} como completada?`)) return;
+    setCompletandoRutina(rutinaActiva.id);
+    const { error: errorCompletar } = await supabase.rpc("finalizar_rutina_cliente", {
+      p_cliente_id: cliente.docId,
+      p_historial_id: rutinaActiva.id,
+    });
+    if (errorCompletar) {
+      console.error("Error al completar rutina:", errorCompletar);
+      setError("No se pudo marcar la rutina como completada.");
+    } else {
+      setClienteParaCompletar(null);
+      await cargarClientes();
+    }
+    setCompletandoRutina(null);
   };
 
   const handleGuardarMedicion = async (e) => {
@@ -432,32 +543,28 @@ export default function ClientesEntrenador({ usuario }) {
       setError("Selecciona la fecha de la medición.");
       return;
     }
+    if (nuevaMedicion.fecha > fechaLocalDe(new Date())) {
+      setError("La fecha de la medición no puede ser futura.");
+      return;
+    }
     if (!nuevaMedicion.peso || !nuevaMedicion.estatura) {
       setError("Peso y estatura son obligatorios para registrar una medición.");
       return;
     }
 
-    const peso = parseFloat(nuevaMedicion.peso);
-    const estatura = parseFloat(nuevaMedicion.estatura);
-    const cintura = nuevaMedicion.cintura ? parseFloat(nuevaMedicion.cintura) : null;
-    const cadera = nuevaMedicion.cadera ? parseFloat(nuevaMedicion.cadera) : null;
-
-    if (isNaN(peso) || peso <= 0 || peso > 500) {
-      setError("El peso debe estar entre 0 y 500 kg.");
-      return;
+    for (const [clave, limite] of Object.entries(LIMITES_MEDICION)) {
+      const texto = `${nuevaMedicion[clave] ?? ""}`;
+      if (texto === "" && (clave === "cintura" || clave === "cadera")) continue; // son opcionales
+      const valor = Number(texto);
+      if (!FORMATO_MEDIDA.test(texto) || valor < limite.min || valor > limite.max) {
+        setError(`${limite.nombre} debe ser un número entre ${limite.min} y ${limite.max} ${limite.unidad} (máximo 1 decimal).`);
+        return;
+      }
     }
-    if (isNaN(estatura) || estatura < 50 || estatura > 260) {
-      setError("La estatura debe estar entre 50 y 260 cm.");
-      return;
-    }
-    if (nuevaMedicion.cintura && (isNaN(cintura) || cintura <= 0 || cintura > 300)) {
-      setError("La cintura debe estar entre 0 y 300 cm.");
-      return;
-    }
-    if (nuevaMedicion.cadera && (isNaN(cadera) || cadera <= 0 || cadera > 300)) {
-      setError("La cadera debe estar entre 0 y 300 cm.");
-      return;
-    }
+    const peso = Number(nuevaMedicion.peso);
+    const estatura = Number(nuevaMedicion.estatura);
+    const cintura = nuevaMedicion.cintura ? Number(nuevaMedicion.cintura) : null;
+    const cadera = nuevaMedicion.cadera ? Number(nuevaMedicion.cadera) : null;
 
     setGuardandoMedicion(true);
     const { error: errMedicion } = await supabase.rpc("registrar_medicion_cliente", {
@@ -608,7 +715,7 @@ export default function ClientesEntrenador({ usuario }) {
                         <div style={{ display: "flex", flexWrap: "wrap", gap: "16px", marginTop: "10px", fontSize: "12px", color: "#555" }}>
                           <span>Objetivo: <strong style={{ color: "#0B0B0B" }}>{cliente.objetivo}</strong></span>
                           <span>Plan: <strong style={{ color: "#0B0B0B" }}>{cliente.plan}</strong></span>
-                          <span>Rutina: <strong style={{ color: "#0B0B0B" }}>{cliente.rutinaAsignada}</strong></span>
+                          <span>Rutinas activas: <strong style={{ color: "#0B0B0B" }}>{rutinasActivasDe(cliente.docId).map((h) => h.nombre_rutina).join(", ") || "Sin asignar"}</strong></span>
                           <span>Peso: <strong style={{ color: "#0B0B0B" }}>{cliente.pesoActual}</strong></span>
                         </div>
                       </div>
@@ -632,6 +739,17 @@ export default function ClientesEntrenador({ usuario }) {
                         >
                           Asignar Rutina
                         </button>
+                        {rutinasActivasDe(cliente.docId).length > 0 && (
+                          <button
+                            onClick={() => setClienteParaCompletar(cliente)}
+                            style={{
+                              background: "#F5F5F5", color: "#0B0B0B", fontWeight: "700", fontSize: "12px",
+                              padding: "10px 16px", borderRadius: "8px", border: "0.5px solid #E5E5E5", cursor: "pointer",
+                            }}
+                          >
+                            Completar Rutina
+                          </button>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -790,7 +908,7 @@ export default function ClientesEntrenador({ usuario }) {
           position: "fixed", inset: 0, background: "rgba(11,11,11,0.45)",
           display: "flex", alignItems: "center", justifyContent: "center", padding: "16px", zIndex: 50,
         }}>
-          <div style={{ ...estiloCard, maxWidth: "420px", width: "100%" }}>
+          <div style={{ ...estiloCard, maxWidth: "480px", width: "100%", maxHeight: "90vh", overflowY: "auto" }}>
             <div style={{ borderBottom: "0.5px solid #E5E5E5", paddingBottom: "14px", marginBottom: "16px" }}>
               <h3 style={{ fontSize: "18px", fontWeight: "900", color: "#0B0B0B", margin: 0 }}>
                 Asignar Rutina
@@ -806,10 +924,10 @@ export default function ClientesEntrenador({ usuario }) {
                 <select
                   style={inputStyle}
                   value={rutinaSeleccionada}
-                  onChange={(e) => setRutinaSeleccionada(e.target.value)}
+                  onChange={(e) => { setRutinaSeleccionada(e.target.value); setErrorPlan(""); }}
                 >
-                  <option value="">Sin Asignar</option>
-                  {rutinas.map((r) => (
+                  <option value="">Selecciona una rutina</option>
+                  {rutinas.filter((r) => !rutinasActivasDe(clienteParaAsignarRutina.docId).some((h) => h.rutina_id === r.docId)).map((r) => (
                     <option key={r.docId} value={r.docId}>
                       {r.nombre} · {r.nivel}
                     </option>
@@ -821,6 +939,76 @@ export default function ClientesEntrenador({ usuario }) {
                   </p>
                 )}
               </div>
+
+              {rutinaSeleccionada && (
+                <>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
+                    <div>
+                      <label style={labelStyle}>Inicia el</label>
+                      <input type="date" style={inputStyle} min={fechaLocalDe(new Date())} value={plan.desde} onChange={(e) => cambiarPlan({ desde: e.target.value })} />
+                    </div>
+                    <div>
+                      <label style={labelStyle}>Termina el</label>
+                      <input type="date" style={inputStyle} min={plan.desde} value={plan.fin} onChange={(e) => cambiarPlan({ fin: e.target.value })} />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label style={labelStyle}>Duración rápida</label>
+                    <select style={inputStyle} value={plan.periodo} onChange={(e) => cambiarPlan({ periodo: e.target.value ? Number(e.target.value) : "" })}>
+                      <option value="">Personalizada</option>
+                      {PERIODOS_PLAN.map((p) => <option key={p.dias} value={p.dias}>{p.etiqueta}</option>)}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label style={labelStyle}>Días de entrenamiento</label>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
+                      {DIAS_PLAN.map((d) => {
+                        const activo = plan.dias.includes(d.numero);
+                        return (
+                          <button
+                            key={d.numero}
+                            type="button"
+                            onClick={() => alternarDiaPlan(d.numero)}
+                            aria-pressed={activo}
+                            style={{
+                              fontSize: "12px", fontWeight: "700", padding: "8px 14px", borderRadius: "8px", cursor: "pointer",
+                              background: activo ? "#0B0B0B" : "#FFF", color: activo ? "#FFF" : "#0B0B0B",
+                              border: activo ? "1px solid #0B0B0B" : "1px solid #D5D5D5",
+                            }}
+                          >
+                            {d.etiqueta}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
+                    <div>
+                      <label style={labelStyle}>Hora</label>
+                      <select style={inputStyle} value={plan.hora} onChange={(e) => cambiarPlan({ hora: e.target.value })}>
+                        <option value="">Selecciona</option>
+                        {horasComunes(plan.dias, plan.duracion).map((h) => <option key={h} value={h}>{h}</option>)}
+                      </select>
+                    </div>
+                    <div>
+                      <label style={labelStyle}>Duración de cada sesión</label>
+                      <select style={inputStyle} value={plan.duracion} onChange={(e) => cambiarPlan({ duracion: Number(e.target.value) })}>
+                        {DURACIONES_SESION.map((m) => <option key={m} value={m}>{m} minutos</option>)}
+                      </select>
+                    </div>
+                  </div>
+
+                  <p style={{ fontSize: "11px", color: "#888", margin: 0 }}>
+                    Horario de atención: {TEXTO_HORARIO}
+                    {plan.dias.length > 0 && plan.hora && ` Se crearán ${generarFechasPlan(plan).length} sesiones con su evento en el calendario del cliente. El día de fin recibirás una notificación para reasignarle una rutina.`}
+                  </p>
+                  {errorPlan && <p role="alert" style={{ background: "#FDECEC", border: "0.5px solid #F3C4C4", borderRadius: "8px", color: "#B02A2A", fontSize: "12px", margin: 0, padding: "10px 12px" }}>{errorPlan}</p>}
+                  {progresoPlan && <p style={{ fontSize: "12px", color: "#555", margin: 0 }}>{progresoPlan}</p>}
+                </>
+              )}
 
               <div style={{ display: "flex", justifyContent: "flex-end", gap: "10px", marginTop: "4px" }}>
                 <button
@@ -842,10 +1030,51 @@ export default function ClientesEntrenador({ usuario }) {
                     cursor: asignandoRutina ? "default" : "pointer", opacity: asignandoRutina ? 0.6 : 1,
                   }}
                 >
-                  {asignandoRutina ? "Guardando..." : "Guardar"}
+                  {asignandoRutina ? "Guardando..." : "Asignar"}
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Completar Rutina */}
+      {clienteParaCompletar && (
+        <div style={{
+          position: "fixed", inset: 0, background: "rgba(11,11,11,0.45)",
+          display: "flex", alignItems: "center", justifyContent: "center", padding: "16px", zIndex: 50,
+        }}>
+          <div style={{ ...estiloCard, maxWidth: "480px", width: "100%", maxHeight: "90vh", overflowY: "auto" }}>
+            <div style={{ borderBottom: "0.5px solid #E5E5E5", paddingBottom: "14px", marginBottom: "16px" }}>
+              <h3 style={{ fontSize: "18px", fontWeight: "900", color: "#0B0B0B", margin: 0 }}>Completar Rutina</h3>
+              <p style={{ fontSize: "12px", color: "#888", margin: "2px 0 0" }}>{clienteParaCompletar.nombre}. Elige la rutina que terminó.</p>
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+              {rutinasActivasDe(clienteParaCompletar.docId).map((h) => (
+                <div key={h.id} style={{ alignItems: "center", background: "#F5F5F5", borderRadius: "10px", display: "flex", gap: "12px", justifyContent: "space-between", padding: "12px 14px" }}>
+                  <div>
+                    <p style={{ fontSize: "13px", fontWeight: "900", color: "#0B0B0B", margin: 0 }}>{h.nombre_rutina}</p>
+                    <p style={{ fontSize: "11px", color: "#888", margin: "3px 0 0" }}>
+                      Asignada el {fechaCorta(h.asignada_en)}{h.fecha_fin ? ` · termina el ${fechaCorta(h.fecha_fin)}` : ""}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={completandoRutina === h.id}
+                    onClick={() => void handleCompletarRutina(clienteParaCompletar, h)}
+                    style={{ background: "#0B0B0B", color: "#FFF", fontWeight: "700", fontSize: "12px", padding: "10px 14px", borderRadius: "8px", border: "none", cursor: "pointer", opacity: completandoRutina === h.id ? 0.6 : 1, whiteSpace: "nowrap" }}
+                  >
+                    {completandoRutina === h.id ? "Guardando..." : "Marcar completada"}
+                  </button>
+                </div>
+              ))}
+              {rutinasActivasDe(clienteParaCompletar.docId).length === 0 && (
+                <p style={{ fontSize: "13px", color: "#888", margin: 0 }}>Este cliente no tiene rutinas activas.</p>
+              )}
+            </div>
+            <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "16px" }}>
+              <button type="button" onClick={() => setClienteParaCompletar(null)} style={{ background: "#FFF", color: "#555", fontWeight: "700", fontSize: "13px", padding: "10px 18px", borderRadius: "8px", border: "0.5px solid #E5E5E5", cursor: "pointer" }}>Cerrar</button>
+            </div>
           </div>
         </div>
       )}
@@ -892,9 +1121,35 @@ export default function ClientesEntrenador({ usuario }) {
                 <p style={{ fontWeight: "700", color: "#0B0B0B", margin: 0 }}>{clienteSeleccionado.pesoActual}</p>
               </div>
               <div>
-                <p style={{ ...labelStyle, marginBottom: "2px" }}>Rutina Vigente</p>
-                <p style={{ fontWeight: "700", color: "#0B0B0B", margin: 0 }}>{clienteSeleccionado.rutinaAsignada}</p>
+                <p style={{ ...labelStyle, marginBottom: "2px" }}>Rutinas activas</p>
+                <p style={{ fontWeight: "700", color: "#0B0B0B", margin: 0 }}>{rutinasActivasDe(clienteSeleccionado.docId).map((h) => h.nombre_rutina).join(", ") || "Sin asignar"}</p>
               </div>
+            </div>
+
+            {/* Historial de rutinas asignadas */}
+            <div style={{ marginBottom: "16px" }}>
+              <p style={{ fontSize: "13px", fontWeight: "900", color: "#0B0B0B", margin: "0 0 10px" }}>Historial de rutinas</p>
+              {historialDe(clienteSeleccionado.docId).length === 0 ? (
+                <p style={{ fontSize: "12px", color: "#888", margin: 0 }}>Aún no se le han asignado rutinas.</p>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                  {historialDe(clienteSeleccionado.docId).map((h) => (
+                    <div key={h.id} style={{ alignItems: "center", background: "#F5F5F5", borderRadius: "8px", display: "flex", gap: "10px", justifyContent: "space-between", padding: "10px 12px" }}>
+                      <div>
+                        <p style={{ fontSize: "12px", fontWeight: "900", color: "#0B0B0B", margin: 0 }}>{h.nombre_rutina}</p>
+                        <p style={{ fontSize: "11px", color: "#888", margin: "2px 0 0" }}>
+                          Asignada {fechaCorta(h.asignada_en)}
+                          {h.estado === "activa" && h.fecha_fin ? ` · termina ${fechaCorta(h.fecha_fin)}` : ""}
+                          {h.finalizada_en ? ` · completada ${fechaCorta(h.finalizada_en)}` : ""}
+                        </p>
+                      </div>
+                      <span style={{ background: h.estado === "activa" ? "#0B0B0B" : "#E5E5E5", borderRadius: "20px", color: h.estado === "activa" ? "#FFF" : "#333", fontSize: "10px", fontWeight: "700", padding: "3px 10px", textTransform: "uppercase" }}>
+                        {h.estado === "activa" ? "Activa" : "Completada"}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
 
             {/* Historial de mediciones (ficha antropométrica) */}
@@ -928,7 +1183,7 @@ export default function ClientesEntrenador({ usuario }) {
                     <div>
                       <label style={labelStyle}>Fecha</label>
                       <input
-                        type="date" required style={{ ...inputStyle, background: "#FFF" }}
+                        type="date" required max={fechaLocalDe(new Date())} style={{ ...inputStyle, background: "#FFF" }}
                         value={nuevaMedicion.fecha}
                         onChange={(e) => setNuevaMedicion({ ...nuevaMedicion, fecha: e.target.value })}
                       />
@@ -936,36 +1191,36 @@ export default function ClientesEntrenador({ usuario }) {
                     <div>
                       <label style={labelStyle}>Peso (kg) *</label>
                       <input
-                        type="number" step="0.1" required style={{ ...inputStyle, background: "#FFF" }}
+                        type="text" inputMode="decimal" autoComplete="off" maxLength={5} required style={{ ...inputStyle, background: "#FFF" }}
                         value={nuevaMedicion.peso}
-                        onChange={(e) => setNuevaMedicion({ ...nuevaMedicion, peso: e.target.value })}
+                        onChange={(e) => setNuevaMedicion({ ...nuevaMedicion, peso: limpiarDecimal(e.target.value) })}
                         placeholder="75.0"
                       />
                     </div>
                     <div>
                       <label style={labelStyle}>Estatura (cm) *</label>
                       <input
-                        type="number" required style={{ ...inputStyle, background: "#FFF" }}
+                        type="text" inputMode="decimal" autoComplete="off" maxLength={5} required style={{ ...inputStyle, background: "#FFF" }}
                         value={nuevaMedicion.estatura}
-                        onChange={(e) => setNuevaMedicion({ ...nuevaMedicion, estatura: e.target.value })}
+                        onChange={(e) => setNuevaMedicion({ ...nuevaMedicion, estatura: limpiarDecimal(e.target.value) })}
                         placeholder="175"
                       />
                     </div>
                     <div>
                       <label style={labelStyle}>Cintura (cm)</label>
                       <input
-                        type="number" step="0.1" style={{ ...inputStyle, background: "#FFF" }}
+                        type="text" inputMode="decimal" autoComplete="off" maxLength={5} style={{ ...inputStyle, background: "#FFF" }}
                         value={nuevaMedicion.cintura}
-                        onChange={(e) => setNuevaMedicion({ ...nuevaMedicion, cintura: e.target.value })}
+                        onChange={(e) => setNuevaMedicion({ ...nuevaMedicion, cintura: limpiarDecimal(e.target.value) })}
                         placeholder="82"
                       />
                     </div>
                     <div>
                       <label style={labelStyle}>Cadera (cm)</label>
                       <input
-                        type="number" step="0.1" style={{ ...inputStyle, background: "#FFF" }}
+                        type="text" inputMode="decimal" autoComplete="off" maxLength={5} style={{ ...inputStyle, background: "#FFF" }}
                         value={nuevaMedicion.cadera}
-                        onChange={(e) => setNuevaMedicion({ ...nuevaMedicion, cadera: e.target.value })}
+                        onChange={(e) => setNuevaMedicion({ ...nuevaMedicion, cadera: limpiarDecimal(e.target.value) })}
                         placeholder="98"
                       />
                     </div>
@@ -1012,18 +1267,7 @@ export default function ClientesEntrenador({ usuario }) {
               )}
             </div>
 
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <button
-                onClick={() =>
-                  handleCambiarEstado(clienteSeleccionado, clienteSeleccionado.estado === "Activo" ? "Inactivo" : "Activo")
-                }
-                style={{
-                  background: "#F5F5F5", color: "#0B0B0B", fontWeight: "700", fontSize: "12px",
-                  padding: "10px 16px", borderRadius: "8px", border: "0.5px solid #E5E5E5", cursor: "pointer",
-                }}
-              >
-                {clienteSeleccionado.estado === "Activo" ? "Marcar Inactivo" : "Marcar Activo"}
-              </button>
+            <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center" }}>
               <button
                 onClick={() => setClienteSeleccionado(null)}
                 style={{

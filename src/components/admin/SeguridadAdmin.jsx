@@ -4,28 +4,6 @@ import ModalInvitacion from "./ModalInvitacion";
 import Aviso from "../Aviso";
 import { invitacionEstaVigente } from "../../utils/seguridad";
 
-// Botón pequeño con borde, en forma de píldora, para acciones dentro de listas.
-const TONOS_ACCION = {
-  neutro: { color: "#333", borde: "#D9D9D9", fondo: "#FFFFFF" },
-  peligro: { color: "#B02A2A", borde: "#F0C2C2", fondo: "#FFFFFF" },
-  positivo: { color: "#085041", borde: "#B9E3D2", fondo: "#FFFFFF" },
-};
-const botonAccion = (tono = "neutro", deshabilitado = false) => {
-  const t = TONOS_ACCION[tono];
-  return {
-    background: deshabilitado ? "#FAFAFA" : t.fondo,
-    border: `1px solid ${deshabilitado ? "#EAEAEA" : t.borde}`,
-    borderRadius: "999px",
-    color: deshabilitado ? "#B5B5B5" : t.color,
-    cursor: deshabilitado ? "not-allowed" : "pointer",
-    fontSize: "12px",
-    fontWeight: "700",
-    lineHeight: 1,
-    padding: "7px 14px",
-    whiteSpace: "nowrap",
-  };
-};
-
 const fechaLegible = (valor) => valor
   ? new Date(valor).toLocaleString("es-DO", { dateStyle: "medium", timeStyle: "short" })
   : "—";
@@ -166,7 +144,7 @@ export default function SeguridadAdmin({ seccion }) {
     // Solo se listan las invitaciones que siguen abiertas; las usadas ya son cuentas y las revocadas no aportan.
     const invitacionesAbiertas = invitaciones
       .filter((invitacion) => invitacion.estado === "pendiente" && coincide(invitacion.email)
-        && (filtro === "todos" || filtro === "invitaciones"));
+        && filtro === "todos");
     const hayResultados = cuentas.length + invitacionesAbiertas.length > 0;
     const botonLista = { background: "#F5F5F5", border: "none", borderRadius: "8px", color: "#0B0B0B", cursor: "pointer", fontSize: "13px", fontWeight: "700", padding: "8px 16px" };
     const estiloTarjeta = { alignItems: "center", background: "#FFFFFF", border: "0.5px solid #E5E5E5", borderRadius: "12px", display: "flex", flexWrap: "wrap", gap: "12px", justifyContent: "space-between", padding: "20px 24px" };
@@ -181,7 +159,7 @@ export default function SeguridadAdmin({ seccion }) {
         <header style={{ alignItems: "center", display: "flex", flexWrap: "wrap", gap: "12px", justifyContent: "space-between", marginBottom: "18px" }}>
           <div>
             <h3 style={{ color: "#0B0B0B", fontSize: "20px", fontWeight: "900", margin: 0 }}>Directorio de administradores</h3>
-            <p style={{ color: "#888", fontSize: "13px", margin: "4px 0 0" }}>Busca, filtra y gestiona las cuentas administrativas y sus invitaciones.</p>
+            <p style={{ color: "#888", fontSize: "13px", margin: "4px 0 0" }}>Busca, filtra y gestiona las cuentas administrativas.</p>
           </div>
           <button type="button" onClick={() => { setMostrarInvitar(true); setMensaje(""); setError(""); }}
             style={{ background: "#0B0B0B", border: 0, borderRadius: "7px", color: "#FFFFFF", cursor: "pointer", fontSize: "12px", fontWeight: "800", padding: "9px 12px" }}>
@@ -221,7 +199,7 @@ export default function SeguridadAdmin({ seccion }) {
             />
           </div>
           <div role="group" aria-label="Filtrar" style={{ background: "#FFFFFF", border: "1px solid #E5E5E5", borderRadius: "999px", display: "flex", flexWrap: "wrap", gap: "4px", padding: "4px" }}>
-            {[["todos", "Todos"], ["activo", "Activos"], ["inactivo", "Inactivos"], ["invitaciones", "Invitaciones"]].map(([valor, etiqueta]) => {
+            {[["todos", "Todos"], ["activo", "Activos"], ["inactivo", "Inactivos"]].map(([valor, etiqueta]) => {
               const seleccionado = filtro === valor;
               return (
                 <button key={valor} type="button" aria-pressed={seleccionado} onClick={() => setFiltro(valor)}
@@ -237,7 +215,7 @@ export default function SeguridadAdmin({ seccion }) {
           <div style={{ background: "#FFF", border: "1px solid #E5E5E5", borderRadius: "12px", color: "#777", padding: "38px", textAlign: "center" }}>No hay administradores para mostrar.</div>
         ) : (
           <div style={{ display: "grid", gap: "8px" }}>
-            {filtro !== "invitaciones" && cuentas.map((usuario) => {
+            {cuentas.map((usuario) => {
               const bloqueo = motivoBloqueo(usuario);
               const esYo = usuario.id === usuarioActualId;
               return (

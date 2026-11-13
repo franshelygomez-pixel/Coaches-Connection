@@ -51,7 +51,6 @@ const menuAdmin = [
   { label: "Entrenadores", icon: "ti-users" },
   { label: "Clientes", icon: "ti-user-plus" },
   { label: "Calendario", icon: "ti-calendar" },
-  { label: "Reportes", icon: "ti-chart-bar" },
   { label: "Ayuda", icon: "ti-help-circle" },
 ];
 
@@ -88,6 +87,19 @@ export default function Layout({ usuario, rol, datosUsuario }) {
   useEffect(() => {
     if (rolNormalizado !== ROLES_PERMITIDOS.ADMIN) return undefined;
     const generar = () => { void supabase.rpc("generar_avisos_invitaciones"); };
+    generar();
+    const intervalo = window.setInterval(generar, 10 * 60 * 1000);
+    return () => window.clearInterval(intervalo);
+  }, [rolNormalizado]);
+
+  // Los entrenadores reciben el aviso el día en que termina la rutina de un cliente.
+  // La función es idempotente: no repite avisos ya enviados.
+  useEffect(() => {
+    if (rolNormalizado !== ROLES_PERMITIDOS.COACH && rolNormalizado !== ROLES_PERMITIDOS.CLIENTE) return undefined;
+    const generar = () => {
+      void supabase.rpc("generar_recordatorios_eventos");
+      if (rolNormalizado === ROLES_PERMITIDOS.COACH) void supabase.rpc("generar_avisos_fin_rutina");
+    };
     generar();
     const intervalo = window.setInterval(generar, 10 * 60 * 1000);
     return () => window.clearInterval(intervalo);
@@ -267,14 +279,15 @@ export default function Layout({ usuario, rol, datosUsuario }) {
               <CentroAyudaPiloto rol={rolNormalizado} />
             ) : activo === "Notificaciones" ? (
               <CentroNotificaciones usuario={usuario} />
-            ) : rolNormalizado === ROLES_PERMITIDOS.ADMIN && activo === "Reportes" ? (
-              <ReportesFase4 rol={rolNormalizado} />
             ) : rolNormalizado === ROLES_PERMITIDOS.ADMIN && activo === "Calendario" ? (
               <CalendarioAdmin />
             ) : rolNormalizado === ROLES_PERMITIDOS.ADMIN && activo === "Clientes" ? (
               <ClientesAdminPaginados />
             ) : rolNormalizado === ROLES_PERMITIDOS.ADMIN && activo === "Inicio" ? (
-              <InicioAdminFase4 setSeccion={navegar} />
+              <>
+                <ReportesFase4 rol={rolNormalizado} />
+                <InicioAdminFase4 setSeccion={navegar} />
+              </>
             ) : rolNormalizado === ROLES_PERMITIDOS.ADMIN ? (
               <DashboardAdmin seccion={activo} setSeccion={navegar} />
             ) : rolNormalizado === ROLES_PERMITIDOS.CLIENTE ? (

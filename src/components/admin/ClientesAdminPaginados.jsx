@@ -261,11 +261,6 @@ export default function ClientesAdminPaginados() {
       ? { label: "--", bg: "#F5F5F5", color: "#888" }
       : { label: "Registrado", bg: "#F5F5F5", color: "#555" };
 
-  const nombreCoach = (id) => {
-    const coach = coaches.find((item) => item.id === id);
-    return coach ? `${coach.nombre} ${coach.apellido || ""}`.trim() : "Sin asignar";
-  };
-
   return (
     <section>
       <header style={{ alignItems: "center", display: "flex", flexWrap: "wrap", gap: "12px", justifyContent: "space-between", marginBottom: "18px" }}>

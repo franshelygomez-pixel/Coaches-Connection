@@ -39,7 +39,7 @@ export default function DashboardAdmin({ seccion, setSeccion }) {
   const cargarCoaches = useCallback(async () => {
     const { data, error } = await supabase
       .from("usuarios")
-      .select("id,nombre,apellido,email,rol,rol_solicitado,estado,codigo,creado_en,telefono,tipo_documento,documento,direccion,aprobado_por,decision_en,motivo_decision")
+      .select("id,nombre,apellido,email,rol,rol_solicitado,estado,codigo,creado_en,telefono,tipo_documento,documento,direccion")
       .in("rol", ["coach", "admin"]);
     if (error) {
       console.error(error);

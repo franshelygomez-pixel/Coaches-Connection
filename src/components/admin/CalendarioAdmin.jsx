@@ -77,6 +77,10 @@ export default function CalendarioAdmin() {
 
     const sesiones = respuestaSesiones.data || [];
     const idsEventoDeSesion = new Set(sesiones.map((sesion) => sesion.evento_id).filter(Boolean));
+    // Una sesión programada crea además un evento recordatorio con el mismo entrenador, cliente y horario.
+    // Si no están enlazados por evento_id, se detecta el duplicado por esa firma.
+    const firma = (coachId, cliente, inicio, fin) => `${coachId}|${cliente}|${new Date(inicio).getTime()}|${new Date(fin).getTime()}`;
+    const firmasDeSesion = new Set(sesiones.map((sesion) => firma(sesion.coach_id, nombreCompleto(sesion.clientes), sesion.inicio, sesion.fin)));
     const lista = [
       ...sesiones.map((sesion) => ({
         id: `sesion-${sesion.id}`, coachId: sesion.coach_id, tipo: sesion.estado || "programada",
@@ -85,6 +89,7 @@ export default function CalendarioAdmin() {
       // Los recordatorios de una sesión ya salen como sesión: solo se agregan eventos sueltos.
       ...(respuestaEventos.data || [])
         .filter((evento) => !idsEventoDeSesion.has(evento.id))
+        .filter((evento) => !firmasDeSesion.has(firma(evento.coach_id, nombreCompleto(evento.clientes), evento.inicio, evento.fin)))
         .map((evento) => ({
           id: `evento-${evento.id}`, coachId: evento.coach_id, tipo: "evento",
           titulo: evento.titulo, cliente: nombreCompleto(evento.clientes), inicio: evento.inicio, fin: evento.fin,

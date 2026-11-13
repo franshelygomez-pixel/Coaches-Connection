@@ -1,11 +1,9 @@
 import { useEffect, useState } from "react";
 import { supabase } from "../supabaseClient";
-import { obtenerTokenGoogle } from "../utils/googleCalendar";
 
 export default function InicioEntrenador({ usuario, datosUsuario, setSeccion }) {
   const [clientes, setClientes] = useState([]);
-  const [eventosSupabase, setEventosSupabase] = useState([]);
-  const [eventosGoogle, setEventosGoogle] = useState([]);
+  const [eventosHoy, setEventosHoy] = useState([]);
   const [cargando, setCargando] = useState(true);
 
   const nombreEntrenador = datosUsuario?.nombre || "Entrenador";
@@ -14,8 +12,6 @@ export default function InicioEntrenador({ usuario, datosUsuario, setSeccion }) 
   const hoy = new Date();
   const hora = hoy.getHours();
   const saludo = hora < 12 ? "Buenos días" : hora < 18 ? "Buenas tardes" : "Buenas noches";
-
-  const token = obtenerTokenGoogle();
 
   // --- Fecha LOCAL de hoy correcta (evita el desfase de toISOString() en UTC-4) ---
   const hoyStr = `${hoy.getFullYear()}-${String(hoy.getMonth() + 1).padStart(2, "0")}-${String(hoy.getDate()).padStart(2, "0")}`;
@@ -39,7 +35,7 @@ export default function InicioEntrenador({ usuario, datosUsuario, setSeccion }) 
     cargarClientes();
   }, [coachId]);
 
-  // Cargar eventos internos (Supabase)
+  // Cargar las sesiones de hoy desde el sistema (tabla eventos)
   useEffect(() => {
     const cargarEventos = async () => {
       if (!coachId) return;
@@ -47,55 +43,18 @@ export default function InicioEntrenador({ usuario, datosUsuario, setSeccion }) 
         .from("eventos")
         .select("*")
         .eq("coach_id", coachId)
-        .eq("fecha", hoyStr);
+        .eq("fecha", hoyStr)
+        .order("inicio", { ascending: true });
 
       if (error) console.error("Error cargando eventos:", error);
-      setEventosSupabase(data || []);
+      setEventosHoy(data || []);
     };
     cargarEventos();
   }, [coachId, hoyStr]);
 
-  // Cargar eventos de Google Calendar
-  useEffect(() => {
-    const cargarEventosGoogle = async () => {
-      if (!token) return;
-      try {
-        // Límites del día LOCAL (UTC-4), no del día UTC
-        const inicio = `${hoyStr}T00:00:00-04:00`;
-        const fin = `${hoyStr}T23:59:59-04:00`;
-        const res = await fetch(
-          `https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=${inicio}&timeMax=${fin}&singleEvents=true&orderBy=startTime`,
-          { headers: { Authorization: `Bearer ${token}` } }
-        );
-        if (!res.ok) throw new Error(`Google Calendar respondió ${res.status}`);
-        const data = await res.json();
-        setEventosGoogle(data.items || []);
-      } catch (e) {
-        console.error("Error cargando eventos Google:", e);
-      }
-    };
-    cargarEventosGoogle();
-  }, [token, hoyStr]);
-
-  // Unificamos las dos fuentes de eventos en un solo array para pintar la UI
-  const idsGoogleVinculados = new Set(eventosSupabase.map((evento) => evento.google_event_id).filter(Boolean));
-  const eventos = [
-    ...eventosSupabase.map(e => ({
-      id: e.id,
-      titulo: e.titulo,
-      descripcion: e.descripcion,
-      inicio: e.inicio,
-    })),
-    ...eventosGoogle.filter((evento) => !idsGoogleVinculados.has(evento.id)).map(e => ({
-      id: e.id,
-      titulo: e.summary,
-      descripcion: e.description,
-      inicio: e.start?.dateTime || e.start?.date,
-    })),
-  ];
-
   const activos = clientes.filter(c => c.estado === "Activo" || c.estado === "activo");
   const inactivos = clientes.filter(c => c.estado === "Inactivo" || c.estado === "inactivo");
+  const sinRutina = clientes.filter(c => !c.rutina_asignada || c.rutina_asignada === "Sin Asignar");
 
   const estiloCard = {
     background: "#FFFFFF", border: "0.5px solid #E5E5E5",
@@ -123,22 +82,28 @@ export default function InicioEntrenador({ usuario, datosUsuario, setSeccion }) 
         </p>
       </div>
 
-      {/* Cards resumen */}
+      {/* Cards resumen (clicables: llevan a su sección) */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: "16px", marginBottom: "32px" }}>
         {[
-          { label: "Total clientes", valor: clientes.length, color: "#E11D2E" },
-          { label: "Clientes activos", valor: activos.length, color: "#1D9E75" },
-          { label: "Clientes inactivos", valor: inactivos.length, color: "#888888" },
-          { label: "Sin rutina", valor: clientes.filter(c => !c.rutina_asignada || c.rutina_asignada === "Sin Asignar").length, color: "#E24B4A" },
+          { label: "Total clientes", valor: clientes.length, seccion: "Clientes" },
+          { label: "Clientes activos", valor: activos.length, seccion: "Clientes" },
+          { label: "Clientes inactivos", valor: inactivos.length, seccion: "Clientes" },
+          { label: "Sin rutina", valor: sinRutina.length, seccion: "Rutinas" },
         ].map(card => (
-          <div key={card.label} style={estiloCard}>
+          <button
+            type="button"
+            key={card.label}
+            onClick={() => setSeccion(card.seccion)}
+            aria-label={`${card.label}: ${card.valor}. Ir a ${card.seccion}`}
+            style={{ ...estiloCard, cursor: "pointer", textAlign: "left", width: "100%" }}
+          >
             <p style={{ fontSize: "12px", color: "#888", marginBottom: "8px" }}>{card.label}</p>
-            <p style={{ fontSize: "36px", fontWeight: "900", color: card.color, margin: 0 }}>{card.valor}</p>
-          </div>
+            <p style={{ fontSize: "36px", fontWeight: "900", color: "#E11D2E", margin: 0 }}>{card.valor}</p>
+          </button>
         ))}
       </div>
 
-      {/* Citas de hoy */}
+      {/* Sesiones de hoy */}
       <div style={{ ...estiloCard, marginBottom: "20px" }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "16px" }}>
           <h3 style={{ fontSize: "15px", fontWeight: "900", color: "#0B0B0B", margin: 0 }}>
@@ -149,19 +114,13 @@ export default function InicioEntrenador({ usuario, datosUsuario, setSeccion }) 
           </span>
         </div>
 
-        {!token && eventosSupabase.length === 0 ? (
-          <div style={{ background: "#FDECEE", borderRadius: "8px", padding: "16px", textAlign: "center" }}>
-            <p style={{ color: "#9B1C24", fontSize: "13px", margin: 0 }}>
-              Inicia sesión con Google para ver tus citas del calendario
-            </p>
-          </div>
-        ) : eventos.length === 0 ? (
+        {eventosHoy.length === 0 ? (
           <div style={{ background: "#F5F5F5", borderRadius: "8px", padding: "24px", textAlign: "center" }}>
-            <p style={{ color: "#888", fontSize: "13px", margin: 0 }}>No tienes citas programadas para hoy</p>
+            <p style={{ color: "#888", fontSize: "13px", margin: 0 }}>No tienes sesiones programadas para hoy</p>
           </div>
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
-            {eventos.map(evento => {
+            {eventosHoy.map(evento => {
               const inicio = evento.inicio
                 ? new Date(evento.inicio).toLocaleTimeString("es-DO", { hour: "2-digit", minute: "2-digit" })
                 : "Todo el día";
@@ -246,13 +205,10 @@ export default function InicioEntrenador({ usuario, datosUsuario, setSeccion }) 
             ].map(acc => (
               <button type="button" onClick={() => setSeccion(acc.seccion)} key={acc.label} style={{
                 background: "#F5F5F5", borderRadius: "10px", padding: "14px 16px",
-                border: 0, cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center", textAlign: "left", width: "100%"
+                border: 0, cursor: "pointer", textAlign: "left", width: "100%"
               }}>
-                <div>
-                  <p style={{ fontSize: "13px", fontWeight: "700", color: "#0B0B0B", margin: 0 }}>{acc.label}</p>
-                  <p style={{ fontSize: "11px", color: "#555", margin: "2px 0 0" }}>{acc.desc}</p>
-                </div>
-                <span style={{ color: "#0B0B0B", fontSize: "16px" }}>→</span>
+                <p style={{ fontSize: "13px", fontWeight: "700", color: "#0B0B0B", margin: 0 }}>{acc.label}</p>
+                <p style={{ fontSize: "11px", color: "#555", margin: "2px 0 0" }}>{acc.desc}</p>
               </button>
             ))}
           </div>

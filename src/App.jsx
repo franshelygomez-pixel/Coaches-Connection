@@ -29,6 +29,19 @@ const Card = ({ children }) => (
 const ENLACE_INVITACION = typeof window !== "undefined"
   && /[#&?]type=invite(&|$)/.test(`${window.location.hash}${window.location.search}`);
 
+// El enlace de recuperación llega como #access_token=...&type=recovery.
+// También se lee al cargar el módulo: el evento PASSWORD_RECOVERY puede emitirse antes de que React
+// registre el listener, y entonces la pantalla de nueva contraseña nunca aparecía.
+const ENLACE_RECUPERACION = typeof window !== "undefined"
+  && /[#&?]type=recovery(&|$)/.test(`${window.location.hash}${window.location.search}`);
+
+// Si el enlace del correo ya se usó o venció, Supabase redirige con #error=access_denied&error_code=otp_expired.
+// Se avisa, se cierra cualquier sesión abierta y se deja al usuario en el login.
+const MENSAJE_ENLACE_INVALIDO = "El enlace del correo no es válido o ya venció. Solicita uno nuevo desde «¿Olvidaste tu contraseña?».";
+const ENLACE_CON_ERROR = typeof window !== "undefined"
+  && /[#&?](error_code=(otp_expired|access_denied)|error=access_denied)(&|$)/.test(`${window.location.hash}${window.location.search}`);
+let avisoEnlaceMostrado = false;
+
 function App() {
   const [usuario, setUsuario] = useState(null);
   const [rol, setRol] = useState(null);
@@ -101,13 +114,25 @@ function App() {
   }, []);
 
   useEffect(() => {
+    if (!ENLACE_CON_ERROR || avisoEnlaceMostrado) return;
+    avisoEnlaceMostrado = true;
+    void (async () => {
+      await supabase.auth.signOut();
+      window.history.replaceState(null, "", `${window.location.pathname}#/`);
+      window.alert(MENSAJE_ENLACE_INVALIDO);
+    })();
+  }, []);
+
+  useEffect(() => {
     if (!CONFIGURACION_SUPABASE_VALIDA) {
       return undefined;
     }
     supabase.auth.getSession().then(({ data: { session } }) => void manejarSesion(session));
 
     const { data: listener } = supabase.auth.onAuthStateChange((event, session) => {
-      if (event === "PASSWORD_RECOVERY") setRecuperandoContrasena(true);
+      if (event === "PASSWORD_RECOVERY" || (ENLACE_RECUPERACION && session && event !== "SIGNED_OUT")) {
+        setRecuperandoContrasena(true);
+      }
       if (event === "SIGNED_IN" && ENLACE_INVITACION && session) {
         setEsInvitacion(true);
         setRecuperandoContrasena(true);
@@ -147,6 +172,10 @@ function App() {
       setMensajeRecuperacion("La contraseña debe tener al menos 8 caracteres.");
       return;
     }
+    if (!/[a-z]/.test(nuevaContrasena) || !/[A-Z]/.test(nuevaContrasena) || !/\d/.test(nuevaContrasena) || !/[^A-Za-z0-9]/.test(nuevaContrasena)) {
+      setMensajeRecuperacion("La contraseña debe incluir mayúscula, minúscula, número y un símbolo (por ejemplo ! # $ %).");
+      return;
+    }
     if (nuevaContrasena !== confirmarContrasena) {
       setMensajeRecuperacion("Las contraseñas no coinciden.");
       return;
@@ -162,6 +191,17 @@ function App() {
     setEsInvitacion(false);
     setNuevaContrasena("");
     setConfirmarContrasena("");
+  };
+
+  // Cancela el cambio de contraseña: cierra la sesión temporal del enlace y vuelve al login.
+  const cancelarRecuperacion = async () => {
+    setRecuperandoContrasena(false);
+    setEsInvitacion(false);
+    setNuevaContrasena("");
+    setConfirmarContrasena("");
+    setMensajeRecuperacion("");
+    await supabase.auth.signOut();
+    window.location.hash = "#/";
   };
 
   if (cargando) return (
@@ -217,15 +257,28 @@ function App() {
 
             <ul style={{ display: "grid", gap: "6px", margin: "0 0 20px", padding: 0 }}>
               {requisito(cumpleLargo, "Mínimo 8 caracteres")}
+              {requisito(/[A-Z]/.test(nuevaContrasena), "Una letra mayúscula")}
+              {requisito(/[a-z]/.test(nuevaContrasena), "Una letra minúscula")}
+              {requisito(/\d/.test(nuevaContrasena), "Un número")}
+              {requisito(/[^A-Za-z0-9]/.test(nuevaContrasena), "Un símbolo (por ejemplo ! # $ %)")}
+              {!esInvitacion && <li style={{ color: "#888", fontSize: "12px", listStyle: "none", paddingLeft: "16px" }}>Debe ser diferente a tu contraseña actual</li>}
               {requisito(coinciden, "Las dos contraseñas coinciden")}
             </ul>
 
             {mensajeRecuperacion && <p role="alert" style={{ color: "#FF6666", fontSize: "13px", margin: "0 0 14px" }}>{mensajeRecuperacion}</p>}
 
-            <button type="submit" disabled={guardandoContrasena}
-              style={{ background: "#FFFFFF", border: "none", borderRadius: "8px", color: "#0B0B0B", cursor: guardandoContrasena ? "default" : "pointer", fontSize: "14px", fontWeight: "900", letterSpacing: "0.5px", opacity: guardandoContrasena ? 0.7 : 1, padding: "14px", width: "100%" }}>
-              {guardandoContrasena ? "GUARDANDO..." : "GUARDAR CONTRASEÑA"}
-            </button>
+            <div style={{ display: "flex", gap: "10px" }}>
+              {!esInvitacion && (
+                <button type="button" disabled={guardandoContrasena} onClick={() => void cancelarRecuperacion()}
+                  style={{ background: "transparent", border: "1px solid #FFFFFF", borderRadius: "8px", color: "#FFFFFF", cursor: "pointer", fontSize: "14px", fontWeight: "900", letterSpacing: "0.5px", padding: "14px", flex: "1 1 0" }}>
+                  VOLVER
+                </button>
+              )}
+              <button type="submit" disabled={guardandoContrasena}
+                style={{ background: "#FFFFFF", border: "1px solid #FFFFFF", borderRadius: "8px", color: "#0B0B0B", cursor: guardandoContrasena ? "default" : "pointer", fontSize: "14px", fontWeight: "900", letterSpacing: "0.5px", opacity: guardandoContrasena ? 0.7 : 1, padding: "14px", flex: "1 1 0" }}>
+                {guardandoContrasena ? "GUARDANDO..." : "GUARDAR"}
+              </button>
+            </div>
           </form>
         </div>
       </main>
@@ -251,7 +304,7 @@ function App() {
 
   if (!usuario) return (
     <Suspense fallback={<PantallaBase><p style={{ color: "#888" }}>Cargando acceso...</p></PantallaBase>}>
-      <Login />
+      <Login key={ENLACE_CON_ERROR ? "enlace-invalido" : "login"} mensajeError={ENLACE_CON_ERROR ? MENSAJE_ENLACE_INVALIDO : ""} />
     </Suspense>
   );
 

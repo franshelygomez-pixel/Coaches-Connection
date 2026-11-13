@@ -15,6 +15,12 @@ const colores = {
   sistema: ["#F5F5F5", "#555"],
 };
 
+const Campana = ({ tamano = 20, color = "currentColor" }) => (
+  <svg aria-hidden="true" width={tamano} height={tamano} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9" /><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0" />
+  </svg>
+);
+
 export default function CentroNotificaciones({ usuario }) {
   const usuarioId = usuario?.id;
   const [notificaciones, setNotificaciones] = useState([]);
@@ -99,12 +105,6 @@ export default function CentroNotificaciones({ usuario }) {
     setPagina(1);
     await cargar();
   };
-
-  const Campana = ({ tamano = 20, color = "currentColor" }) => (
-    <svg aria-hidden="true" width={tamano} height={tamano} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9" /><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0" />
-    </svg>
-  );
 
   const filtros = [[false, "Todas"], [true, "No leídas"]];
 

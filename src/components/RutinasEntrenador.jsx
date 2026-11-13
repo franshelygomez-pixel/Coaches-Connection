@@ -4,8 +4,10 @@ import { supabase, traducirErrorSupabase } from "../supabaseClient";
 const ejercicioVacio = () => ({ ejercicio: "", series: "", repeticiones: "", descanso: "", notas: "" });
 const formularioVacio = () => ({ nombre: "", nivel: "Principiante", contenido: [ejercicioVacio()] });
 
+const NIVELES = ["Principiante", "Intermedio", "Avanzado"];
+
 const campo = {
-  width: "100%", background: "#FAFAFA", border: "1px solid #E5E5E5",
+  width: "100%", background: "#FFF", border: "1px solid #E5E5E5",
   borderRadius: "8px", boxSizing: "border-box", fontSize: "14px", outline: "none", padding: "11px",
 };
 
@@ -148,72 +150,82 @@ export default function RutinasEntrenador({ usuario }) {
 
   if (cargando) return <p style={{ color: "#888", textAlign: "center", padding: "40px" }}>Cargando rutinas...</p>;
 
+  const boton = { fontSize: "12px", fontWeight: "700", padding: "10px 16px", borderRadius: "8px", border: "none", cursor: "pointer" };
+  const etiquetaCampo = { display: "block", fontSize: "12px", fontWeight: "700", color: "#333", marginBottom: "6px" };
+
   return (
-    <section>
-      <header style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: "16px", marginBottom: "24px" }}>
-        <div>
-          <h3 style={{ margin: 0, fontSize: "22px", fontWeight: "900" }}>Mis rutinas</h3>
-          <p style={{ color: "#888", fontSize: "13px", marginTop: "5px" }}>Crea rutinas con nivel, ejercicios y parámetros de trabajo.</p>
-        </div>
-        <span style={{ background: "#FBD5D9", borderRadius: "20px", fontSize: "13px", fontWeight: "700", padding: "8px 14px", height: "fit-content" }}>{rutinas.length} registradas</span>
-      </header>
+    <section style={{ width: "100%" }}>
+      <div style={{ marginBottom: "28px" }}>
+        <h3 style={{ fontSize: "16px", fontWeight: "900", margin: "0 0 16px" }}>{editandoId ? "Editar rutina" : "Nueva rutina"}</h3>
 
-      {error && <p role="alert" style={{ background: "#FFF0F0", border: "1px solid #FFCCCC", borderRadius: "8px", color: "#CC0000", fontSize: "13px", padding: "12px" }}>{error}</p>}
+        {error && <p role="alert" style={{ background: "#FDECEC", border: "0.5px solid #F3C4C4", borderRadius: "10px", color: "#B02A2A", fontSize: "13px", margin: "0 0 16px", padding: "12px 16px" }}>{error}</p>}
 
-      <form onSubmit={guardarRutina} style={{ background: "#FFF", border: "1px solid #E5E5E5", borderRadius: "12px", padding: "20px", marginBottom: "20px" }}>
-        <div style={{ display: "grid", gridTemplateColumns: "minmax(220px, 2fr) minmax(160px, 1fr)", gap: "10px", marginBottom: "16px" }}>
-          <div>
-            <label htmlFor="nombre-rutina" style={{ display: "block", fontSize: "12px", fontWeight: "700", marginBottom: "6px" }}>Nombre</label>
-            <input id="nombre-rutina" maxLength={80} value={formulario.nombre} onChange={(evento) => setFormulario((actual) => ({ ...actual, nombre: evento.target.value }))} style={campo} />
-          </div>
-          <div>
-            <label htmlFor="nivel-rutina" style={{ display: "block", fontSize: "12px", fontWeight: "700", marginBottom: "6px" }}>Nivel</label>
-            <select id="nivel-rutina" value={formulario.nivel} onChange={(evento) => setFormulario((actual) => ({ ...actual, nivel: evento.target.value }))} style={campo}>
-              <option>Principiante</option><option>Intermedio</option><option>Avanzado</option>
-            </select>
-          </div>
-        </div>
-
-        <p style={{ fontSize: "12px", fontWeight: "800", marginBottom: "8px" }}>Ejercicios</p>
-        {formulario.contenido.map((item, indice) => (
-          <div key={indice} style={{ background: "#F7F7F7", borderRadius: "9px", display: "grid", gridTemplateColumns: "2fr 0.7fr 1fr 1fr 2fr auto", gap: "8px", marginBottom: "8px", padding: "10px" }}>
-            <input aria-label={`Ejercicio ${indice + 1}`} placeholder="Ejercicio" maxLength={100} value={item.ejercicio} onChange={(e) => cambiarEjercicio(indice, "ejercicio", e.target.value)} style={campo} />
-            <input aria-label={`Series del ejercicio ${indice + 1}`} placeholder="Series" maxLength={10} value={item.series} onChange={(e) => cambiarEjercicio(indice, "series", e.target.value)} style={campo} />
-            <input aria-label={`Repeticiones del ejercicio ${indice + 1}`} placeholder="Repeticiones" maxLength={20} value={item.repeticiones} onChange={(e) => cambiarEjercicio(indice, "repeticiones", e.target.value)} style={campo} />
-            <input aria-label={`Descanso del ejercicio ${indice + 1}`} placeholder="Descanso" maxLength={20} value={item.descanso} onChange={(e) => cambiarEjercicio(indice, "descanso", e.target.value)} style={campo} />
-            <input aria-label={`Notas del ejercicio ${indice + 1}`} placeholder="Indicaciones" maxLength={180} value={item.notas} onChange={(e) => cambiarEjercicio(indice, "notas", e.target.value)} style={campo} />
-            <button type="button" aria-label={`Quitar ejercicio ${indice + 1}`} onClick={() => quitarEjercicio(indice)} style={{ background: "#FFF0F0", border: 0, borderRadius: "8px", color: "#B02A2A", cursor: "pointer", padding: "0 12px" }}>X</button>
-          </div>
-        ))}
-        <button type="button" onClick={agregarEjercicio} style={{ background: "#F1F1F1", border: 0, borderRadius: "8px", cursor: "pointer", fontWeight: "700", marginBottom: "16px", padding: "10px 14px" }}>+ Agregar ejercicio</button>
-        <div style={{ display: "flex", gap: "8px" }}>
-          <button type="submit" disabled={guardando} style={{ background: "#0B0B0B", color: "#FFFFFF", border: 0, borderRadius: "8px", cursor: "pointer", fontWeight: "900", padding: "11px 18px", opacity: guardando ? 0.65 : 1 }}>{guardando ? "Guardando..." : editandoId ? "Actualizar rutina" : "Crear rutina"}</button>
-          {editandoId && <button type="button" onClick={limpiarFormulario} style={{ background: "#EEE", border: 0, borderRadius: "8px", cursor: "pointer", padding: "11px 18px" }}>Cancelar</button>}
-        </div>
-      </form>
-
-      <input aria-label="Buscar rutinas" value={busqueda} onChange={(evento) => setBusqueda(evento.target.value)} placeholder="Buscar rutina por nombre o nivel" style={{ ...campo, marginBottom: "16px" }} />
-      {rutinasFiltradas.length === 0 ? (
-        <div style={{ background: "#FFF", border: "1px solid #E5E5E5", borderRadius: "12px", color: "#888", padding: "36px", textAlign: "center" }}>No hay rutinas para mostrar.</div>
-      ) : rutinasFiltradas.map((rutina) => (
-        <article key={rutina.id} style={{ background: "#FFF", border: "1px solid #E5E5E5", borderRadius: "12px", marginBottom: "10px", padding: "18px" }}>
-          <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: "12px" }}>
+        <form onSubmit={guardarRutina}>
+          <div style={{ display: "grid", gridTemplateColumns: "minmax(220px, 2fr) minmax(160px, 1fr)", gap: "12px", marginBottom: "16px" }}>
             <div>
-              <h4 style={{ margin: 0 }}>{rutina.nombre}</h4>
-              <p style={{ color: "#777", fontSize: "12px", margin: "5px 0 0" }}>{rutina.nivel || "Sin nivel"} · {Array.isArray(rutina.contenido) ? rutina.contenido.length : 0} ejercicios</p>
+              <label htmlFor="nombre-rutina" style={etiquetaCampo}>Nombre</label>
+              <input id="nombre-rutina" maxLength={80} value={formulario.nombre} onChange={(evento) => setFormulario((actual) => ({ ...actual, nombre: evento.target.value }))} style={campo} />
             </div>
-            <div style={{ display: "flex", gap: "8px" }}>
-              <button type="button" onClick={() => comenzarEdicion(rutina)} style={{ background: "#0B0B0B", color: "#FFFFFF", border: 0, borderRadius: "7px", cursor: "pointer", fontWeight: "700", padding: "8px 12px" }}>Editar</button>
-              <button type="button" onClick={() => void eliminarRutina(rutina)} style={{ background: "#FFF0F0", border: 0, borderRadius: "7px", color: "#B02A2A", cursor: "pointer", padding: "8px 12px" }}>Eliminar</button>
+            <div>
+              <label htmlFor="nivel-rutina" style={etiquetaCampo}>Nivel</label>
+              <select id="nivel-rutina" value={formulario.nivel} onChange={(evento) => setFormulario((actual) => ({ ...actual, nivel: evento.target.value }))} style={campo}>
+                {NIVELES.map((n) => <option key={n}>{n}</option>)}
+              </select>
             </div>
           </div>
-          {Array.isArray(rutina.contenido) && rutina.contenido.length > 0 && (
-            <ol style={{ color: "#444", fontSize: "13px", margin: "14px 0 0", paddingLeft: "22px" }}>
-              {rutina.contenido.map((item, indice) => <li key={`${rutina.id}-${indice}`} style={{ marginBottom: "5px" }}><strong>{item.ejercicio}</strong> — {item.series} series · {item.repeticiones} repeticiones{item.descanso ? ` · ${item.descanso} descanso` : ""}</li>)}
-            </ol>
-          )}
-        </article>
-      ))}
+
+          <span style={etiquetaCampo}>Ejercicios</span>
+          {formulario.contenido.map((item, indice) => (
+            <div key={indice} style={{ display: "grid", gridTemplateColumns: "2fr 0.7fr 1fr 1fr 2fr auto", gap: "8px", marginBottom: "8px" }}>
+              <input aria-label={`Ejercicio ${indice + 1}`} placeholder="Ejercicio" maxLength={100} value={item.ejercicio} onChange={(e) => cambiarEjercicio(indice, "ejercicio", e.target.value)} style={campo} />
+              <input aria-label={`Series del ejercicio ${indice + 1}`} placeholder="Series" maxLength={10} value={item.series} onChange={(e) => cambiarEjercicio(indice, "series", e.target.value)} style={campo} />
+              <input aria-label={`Repeticiones del ejercicio ${indice + 1}`} placeholder="Repeticiones" maxLength={20} value={item.repeticiones} onChange={(e) => cambiarEjercicio(indice, "repeticiones", e.target.value)} style={campo} />
+              <input aria-label={`Descanso del ejercicio ${indice + 1}`} placeholder="Descanso" maxLength={20} value={item.descanso} onChange={(e) => cambiarEjercicio(indice, "descanso", e.target.value)} style={campo} />
+              <input aria-label={`Notas del ejercicio ${indice + 1}`} placeholder="Indicaciones" maxLength={180} value={item.notas} onChange={(e) => cambiarEjercicio(indice, "notas", e.target.value)} style={campo} />
+              <button type="button" aria-label={`Quitar ejercicio ${indice + 1}`} onClick={() => quitarEjercicio(indice)} style={{ ...boton, background: "#FFF", border: "1px solid #0B0B0B", color: "#0B0B0B" }}>Quitar</button>
+            </div>
+          ))}
+          <div style={{ display: "flex", flexWrap: "wrap", gap: "8px", marginTop: "12px" }}>
+            <button type="button" onClick={agregarEjercicio} style={{ ...boton, background: "#FFF", border: "1px solid #0B0B0B", color: "#0B0B0B" }}>Agregar ejercicio</button>
+            <button type="submit" disabled={guardando} style={{ ...boton, background: "#0B0B0B", color: "#FFF", opacity: guardando ? 0.65 : 1 }}>{guardando ? "Guardando..." : editandoId ? "Actualizar rutina" : "Crear rutina"}</button>
+            {editandoId && <button type="button" onClick={limpiarFormulario} style={{ ...boton, background: "#FFF", border: "1px solid #0B0B0B", color: "#0B0B0B" }}>Cancelar</button>}
+          </div>
+        </form>
+      </div>
+
+      <div style={{ alignItems: "center", borderTop: "1px solid #E5E5E5", display: "flex", flexWrap: "wrap", gap: "12px", justifyContent: "space-between", padding: "24px 0 4px" }}>
+        <h3 style={{ fontSize: "16px", fontWeight: "900", margin: 0 }}>Mis rutinas ({rutinas.length})</h3>
+        <input aria-label="Buscar rutinas" value={busqueda} onChange={(evento) => setBusqueda(evento.target.value)} placeholder="Buscar por nombre o nivel..." style={{ ...campo, width: "min(100%, 260px)" }} />
+      </div>
+
+      {rutinasFiltradas.length === 0 ? (
+        <div style={{ background: "#FFF", border: "0.5px solid #E5E5E5", borderRadius: "12px", color: "#888", fontSize: "13px", marginTop: "12px", padding: "40px", textAlign: "center" }}>No hay rutinas para mostrar.</div>
+      ) : rutinasFiltradas.map((rutina) => {
+        const total = Array.isArray(rutina.contenido) ? rutina.contenido.length : 0;
+        return (
+          <article key={rutina.id} style={{ background: "#FFF", border: "0.5px solid #E5E5E5", borderRadius: "12px", marginTop: "12px", padding: "20px 24px" }}>
+            <div style={{ alignItems: "center", display: "flex", flexWrap: "wrap", gap: "12px", justifyContent: "space-between" }}>
+              <div>
+                <p style={{ fontSize: "15px", fontWeight: "900", margin: 0 }}>{rutina.nombre}</p>
+                <p style={{ color: "#888", fontSize: "12px", margin: "3px 0 0" }}>{rutina.nivel || "Sin nivel"} · {total} {total === 1 ? "ejercicio" : "ejercicios"}</p>
+              </div>
+              <div style={{ display: "flex", gap: "8px" }}>
+                <button type="button" onClick={() => comenzarEdicion(rutina)} style={{ ...boton, background: "#0B0B0B", color: "#FFF" }}>Editar</button>
+                <button type="button" onClick={() => void eliminarRutina(rutina)} style={{ ...boton, background: "#F5F5F5", border: "0.5px solid #E5E5E5", color: "#0B0B0B" }}>Eliminar</button>
+              </div>
+            </div>
+            {total > 0 && (
+              <ul style={{ borderTop: "0.5px solid #E5E5E5", color: "#555", fontSize: "13px", listStyle: "none", margin: "14px 0 0", padding: "12px 0 0" }}>
+                {rutina.contenido.map((item, indice) => (
+                  <li key={`${rutina.id}-${indice}`} style={{ margin: "4px 0" }}>
+                    <strong style={{ color: "#0B0B0B" }}>{item.ejercicio}</strong> · {item.series} x {item.repeticiones}{item.descanso ? ` · descanso ${item.descanso}` : ""}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </article>
+        );
+      })}
     </section>
   );
 }
