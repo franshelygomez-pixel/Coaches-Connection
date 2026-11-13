@@ -14,6 +14,7 @@ const GMAIL_USER = Deno.env.get("GMAIL_USER")!;
 const GMAIL_APP_PASSWORD = (Deno.env.get("GMAIL_APP_PASSWORD") || "").replace(/\s/g, "");
 const SECRETO = Deno.env.get("CORREOS_SECRETO")!;
 const CONTACTO = Deno.env.get("CORREO_CONTACTO") ?? "";
+const SITIO = (Deno.env.get("SITE_URL") ?? "").replace(/\/$/, "");
 const MAX_MENSUALES = 6; // deja de insistir después de 6 meses
 const INTERVALO_MIN = 20 * 24 * 60 * 60 * 1000; // al menos 20 días desde el último correo
 
@@ -66,7 +67,11 @@ function plantilla(opciones: { titulo: string; parrafos: string[]; boton: string
 
 const enlaceContacto = (asunto: string) =>
   CONTACTO ? `mailto:${CONTACTO}?subject=${encodeURIComponent(asunto)}` : `mailto:${GMAIL_USER}?subject=${encodeURIComponent(asunto)}`;
-const urlBajaDe = (c: Cliente) => `${SUPABASE_URL}/functions/v1/correos-clientes?baja=${c.token_baja}`;
+const urlBajaDe = (c: Cliente) => SITIO
+  ? `${SITIO}/#/baja/${c.token_baja}`
+  : `${SUPABASE_URL}/functions/v1/correos-clientes?baja=${c.token_baja}`;
+// El botón lleva al sitio público; si no hay SITE_URL, abre un correo al gimnasio.
+const enlaceVolver = (asunto: string) => SITIO || enlaceContacto(asunto);
 const nombreDe = (c: Cliente) => (c.nombre || "").trim().split(" ")[0] || "";
 
 function correoDespedida(c: Cliente) {
@@ -81,7 +86,7 @@ function correoDespedida(c: Cliente) {
         "Las puertas de Fittrainer siguen abiertas para ti cuando estés listo.",
       ],
       boton: "Quiero volver",
-      enlaceBoton: enlaceContacto("Quiero volver a entrenar"),
+      enlaceBoton: enlaceVolver("Quiero volver a entrenar"),
       urlBaja: urlBajaDe(c),
     }),
   };
@@ -131,7 +136,7 @@ function correoMensual(c: Cliente) {
       titulo: v.titulo,
       parrafos: v.parrafos,
       boton: "Quiero volver",
-      enlaceBoton: enlaceContacto("Quiero volver a entrenar"),
+      enlaceBoton: enlaceVolver("Quiero volver a entrenar"),
       urlBaja: urlBajaDe(c),
     }),
   };

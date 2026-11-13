@@ -7,6 +7,7 @@ import {
   traducirErrorSupabase,
 } from "./supabaseClient";
 import { ACCESOS, evaluarAcceso, normalizarRol } from "./utils/permisos";
+import BajaCorreos from "./pages/BajaCorreos";
 
 const Login = lazy(() => import("./pages/Login"));
 const Layout = lazy(() => import("./components/Layout"));
@@ -41,6 +42,11 @@ const MENSAJE_ENLACE_INVALIDO = "El enlace del correo no es válido o ya venció
 const ENLACE_CON_ERROR = typeof window !== "undefined"
   && /[#&?](error_code=(otp_expired|access_denied)|error=access_denied)(&|$)/.test(`${window.location.hash}${window.location.search}`);
 let avisoEnlaceMostrado = false;
+
+// Enlace de baja de correos: #/baja/<token>. Es una página pública, no requiere iniciar sesión.
+const TOKEN_BAJA = typeof window !== "undefined"
+  ? (window.location.hash.match(/^#\/baja\/([A-Za-z0-9_-]{8,})/) || [])[1] || ""
+  : "";
 
 function App() {
   const [usuario, setUsuario] = useState(null);
@@ -203,6 +209,8 @@ function App() {
     await supabase.auth.signOut();
     window.location.hash = "#/";
   };
+
+  if (TOKEN_BAJA) return <BajaCorreos token={TOKEN_BAJA} />;
 
   if (cargando) return (
     <PantallaBase>
