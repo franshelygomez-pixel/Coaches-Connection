@@ -26,7 +26,7 @@ const GUIAS = {
     descripcion: "Aquí ves tu rutina, tus sesiones y tu progreso.",
     pasos: [
       "Tu entrenador te asigna una rutina; en Mi rutina ves sus ejercicios, series y descansos.",
-      "En Calendario ves tus sesiones por día. Pulsa Agregar a Google Calendar para guardar una en tu propio calendario.",
+      "En Mis sesiones ves tus sesiones próximas, completadas y canceladas, y en Calendario las ves organizadas por día.",
       "Tu entrenador registra tus mediciones y en Seguimiento ves tu evolución. Son datos de seguimiento, no un diagnóstico médico.",
       "En Privacidad puedes consultar y administrar el uso de tus datos.",
     ],

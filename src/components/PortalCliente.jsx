@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { supabase, traducirErrorSupabase } from "../supabaseClient";
 import { consentimientoActual, resumirAsistencia } from "../utils/sesiones";
-import { detalleDeRutina, enlaceGoogleCalendar } from "../utils/googleEnlace";
 import { DESPLAZAMIENTO_ZONA, fechaHoy, sumarDias, ZONA_HORARIA } from "../utils/horario";
 
 const tarjeta = {
@@ -234,22 +233,6 @@ export default function PortalCliente({ datosUsuario, seccion, setSeccion }) {
   const ejercicios = Array.isArray(cliente.rutinas?.contenido) ? cliente.rutinas.contenido : [];
   const titulo4 = { color: "#0B0B0B", fontSize: "15px", fontWeight: "900", margin: "0 0 12px" };
 
-  // La rutina del día va en la descripción del evento: si la sesión usa la rutina actual
-  // del cliente se incluyen sus ejercicios; si no, solo el nombre.
-  const enlaceGoogleDe = (sesion) => {
-    const usaRutinaActual = cliente.rutinas && (!sesion.rutinas?.nombre || sesion.rutinas.nombre === cliente.rutinas.nombre);
-    const detalle = usaRutinaActual
-      ? detalleDeRutina(cliente.rutinas, ejercicios)
-      : detalleDeRutina(sesion.rutinas?.nombre ? { nombre: sesion.rutinas.nombre } : null);
-    return enlaceGoogleCalendar({ titulo: sesion.titulo, inicio: sesion.inicio, fin: sesion.fin, detalle });
-  };
-  const botonGoogle = (sesion) => (
-    <a href={enlaceGoogleDe(sesion)} target="_blank" rel="noopener noreferrer"
-      style={{ background: "#FFFFFF", border: "1px solid #D5D5D5", borderRadius: "999px", color: "#333", fontSize: "12px", fontWeight: "800", padding: "7px 14px", textDecoration: "none", whiteSpace: "nowrap" }}>
-      Agregar a Google Calendar
-    </a>
-  );
-
   const renderResumen = () => {
     const tarjetas = [
       ["Próximas sesiones", proximas.length, "proximas"],
@@ -323,7 +306,6 @@ export default function PortalCliente({ datosUsuario, seccion, setSeccion }) {
                       <strong style={{ color: "#0B0B0B", fontSize: "14px" }}>{sesion.titulo}</strong>
                       <p style={{ color: "#888", fontSize: "12px", margin: "2px 0 0" }}>{hora(sesion.inicio)}{sesion.rutinas?.nombre ? ` · ${sesion.rutinas.nombre}` : ""}</p>
                     </div>
-                    <div style={{ marginLeft: "auto" }}>{botonGoogle(sesion)}</div>
                   </div>
                 ))}
               </div>
@@ -468,7 +450,6 @@ export default function PortalCliente({ datosUsuario, seccion, setSeccion }) {
               <div style={{ display: "flex", flexWrap: "wrap", gap: "6px" }}>
                 <Insignia valor={sesion.estado} />
                 {sesion.asistencia && sesion.asistencia !== sesion.estado && <Insignia valor={sesion.asistencia} />}
-                {sesion.estado === "programada" && new Date(sesion.inicio).getTime() >= momentoCarga && botonGoogle(sesion)}
               </div>
             </article>
           ))}
@@ -677,7 +658,6 @@ export default function PortalCliente({ datosUsuario, seccion, setSeccion }) {
             {delDia.map((sesion) => {
               const rutina = rutinaDeSesion(sesion);
               const lista = Array.isArray(rutina?.contenido) ? rutina.contenido : [];
-              const futura = sesion.estado === "programada" && new Date(sesion.inicio).getTime() >= momentoCarga;
               return (
                 <article key={sesion.id} style={tarjeta}>
                   <div style={{ alignItems: "center", display: "flex", flexWrap: "wrap", gap: "12px", justifyContent: "space-between" }}>
@@ -687,7 +667,6 @@ export default function PortalCliente({ datosUsuario, seccion, setSeccion }) {
                     </div>
                     <div style={{ alignItems: "center", display: "flex", flexWrap: "wrap", gap: "8px" }}>
                       <Insignia valor={sesion.estado} />
-                      {futura && botonGoogle(sesion)}
                     </div>
                   </div>
                   {lista.length > 0 && (
